@@ -474,4 +474,4 @@ audio_path = video_editor.extract_audio(video_path=video_path)
     print(video_editor.transcribe(audio_path, max_segment_gap=2))"""
 
 print(video_editor.transcribe(audio_path, max_words_per_segment=5, max_segment_duration=2))
-
+video_editor.create_subtitled_video()
