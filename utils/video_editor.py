@@ -57,6 +57,47 @@ class VideoEditor:
         self.video_codec = 'libx264'
         self.audio_codec = 'aac'
 
+        self.style_elegant = {
+            'font': 'Montserrat',
+            'fontsize': 24,
+            'color': 'white',
+            'bg_color': '#000000',
+            'bg_opacity': 0.4,
+            'position': 'bottom',
+            'align': 'center',
+            'stroke_color': 'black',
+            'stroke_width': 1.0,
+            'interline': 3,
+            'method': 'segment',
+            'max_lines': 2
+        }
+
+        self.style_tiktok = {
+            'font': 'Impact',
+            'fontsize': 40,
+            'color': 'white',
+            'bg_color': '#FF0050',  # Rose TikTok
+            'bg_opacity': 0.8,
+            'position': 'bottom',
+            'align': 'center',
+            'stroke_color': 'black',
+            'stroke_width': 2.0,
+            'method': 'segment',
+            'max_lines': 1  # Une seule ligne pour éviter trop de texte
+        }
+
+        self.style_animated = {
+            'font': 'Arial-Bold',
+            'fontsize': 36,
+            'color': '#FFFFFF',
+            'bg_color': '#0000AA',
+            'bg_opacity': 0.7,
+            'position': 'center',  # Au centre de l'écran
+            'method': 'word_by_word',
+            'stroke_color': 'black',
+            'stroke_width': 2.0
+        }
+
     def load_whisper_model(self):
         subprocess.Popen(
             [sys.executable, "WhisperServer.py", "--model", self.whisper_model],
@@ -373,8 +414,256 @@ class VideoEditor:
             print(f"Erreur lors du chargement de la vidéo: {e}")
             return []
 
-    def create_subtitled_video(self):
-        pass
+    def create_subtitled_video(self, video_path=None, subtitle_style=None, output_path=None):
+        """
+        Crée une vidéo avec des sous-titres basés sur la transcription disponible.
+
+        Args:
+            video_path (str, optional): Chemin vers le fichier vidéo. Si None, utilise self.current_video
+            subtitle_style (dict, optional): Dictionnaire de paramètres pour personnaliser les sous-titres.
+                Paramètres disponibles:
+                    - 'font': Police de caractères (par défaut: 'Arial')
+                    - 'fontsize': Taille de la police (par défaut: 30)
+                    - 'color': Couleur du texte (par défaut: 'white')
+                    - 'bg_color': Couleur de fond (par défaut: 'black')
+                    - 'position': Position verticale ('bottom', 'top', 'center', par défaut: 'bottom')
+                    - 'align': Alignement horizontal ('center', 'left', 'right', par défaut: 'center')
+                    - 'margin': Marge en pixels (par défaut: 20)
+                    - 'stroke_color': Couleur du contour du texte (par défaut: 'black')
+                    - 'stroke_width': Épaisseur du contour (par défaut: 1.5)
+                    - 'interline': Espacement entre les lignes (par défaut: 5)
+                    - 'method': Méthode d'affichage ('segment', 'word_by_word', par défaut: 'segment')
+                    - 'max_lines': Nombre maximum de lignes par sous-titre (par défaut: 2)
+            output_path (str, optional): Chemin de sortie pour la vidéo sous-titrée.
+                                         Si None, génère un nom basé sur le fichier original
+
+        Returns:
+            str: Chemin vers la vidéo sous-titrée
+        """
+        from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+        import os
+        from datetime import datetime
+        import textwrap
+
+        # ------------------------------------------------------------
+        # 1. VALIDATION DES ENTRÉES ET INITIALISATION
+        # ------------------------------------------------------------
+
+        # Vérifications préalables
+        if not self.current_transcription:
+            raise ValueError("Aucune transcription disponible. Utilisez d'abord la méthode transcribe().")
+
+        # Utiliser la vidéo fournie ou la vidéo actuelle
+        video = None
+        if video_path:
+            video = VideoFileClip(video_path)
+        elif self.current_video:
+            video = self.current_video
+        else:
+            raise ValueError("Aucune vidéo disponible. Chargez une vidéo ou fournissez un chemin.")
+
+        # Paramètres par défaut pour les sous-titres
+        default_style = {
+            'font': 'Arial',
+            'fontsize': 30,
+            'color': 'white',
+            'bg_color': 'black',
+            'position': 'bottom',
+            'align': 'center',
+            'margin': 20,
+            'stroke_color': 'black',
+            'stroke_width': 1.5,
+            'interline': 5,
+            'method': 'segment',
+            'max_lines': 2,
+        }
+
+        # Fusionner avec les paramètres fournis
+        if subtitle_style:
+            for key, value in subtitle_style.items():
+                default_style[key] = value
+
+        # Convertir explicitement tous les paramètres numériques en nombres
+        for key in ['fontsize', 'margin', 'max_lines', 'interline']:
+            if key in default_style:
+                default_style[key] = int(default_style[key])
+
+        for key in ['stroke_width']:
+            if key in default_style:
+                default_style[key] = float(default_style[key])
+
+        # ------------------------------------------------------------
+        # 2. CONFIGURATION DES CHEMINS ET SORTIES
+        # ------------------------------------------------------------
+
+        # Définir le chemin de sortie si non spécifié
+        if not output_path:
+            if video_path:
+                base_name = os.path.splitext(os.path.basename(video_path))[0]
+                output_dir = os.path.dirname(video_path)
+            elif hasattr(self.current_video, 'filename') and self.current_video.filename:
+                base_name = os.path.splitext(os.path.basename(self.current_video.filename))[0]
+                output_dir = os.path.dirname(self.current_video.filename)
+            else:
+                base_name = f"subtitled_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                output_dir = self.output_dir
+
+            output_path = os.path.join(output_dir, f"{base_name}_subtitled.mp4")
+
+        # ------------------------------------------------------------
+        # 3. CALCUL DES POSITIONS ET DIMENSIONS
+        # ------------------------------------------------------------
+
+        # Calculer les positions et dimensions
+        max_text_width = video.w - (2 * default_style['margin'])
+
+        # Déterminer la position verticale
+        if default_style['position'] == 'bottom':
+            y_pos = video.h - default_style['fontsize'] * (default_style['max_lines'] + 1) - default_style['margin']
+        elif default_style['position'] == 'top':
+            y_pos = default_style['margin']
+        else:  # center
+            y_pos = (video.h - default_style['fontsize'] * default_style['max_lines']) // 2
+
+        # ------------------------------------------------------------
+        # 4. CRÉATION DES SOUS-TITRES (SELON LA MÉTHODE)
+        # ------------------------------------------------------------
+
+        # Liste pour stocker les clips de sous-titres
+        subtitle_clips = []
+
+        # Méthode d'affichage par segment (par défaut)
+        if default_style['method'] == 'segment':
+            segments = self.current_transcription.get("segments", [])
+
+            for segment in segments:
+                start_time = segment.get("start", 0)
+                end_time = segment.get("end", 0)
+                text = segment.get("text", "")
+
+                # Découper le texte en lignes si nécessaire
+                chars_per_line = max_text_width // (default_style['fontsize'] // 2)
+                lines = textwrap.wrap(text, width=int(chars_per_line))
+
+                # Limiter le nombre de lignes
+                if len(lines) > default_style['max_lines']:
+                    lines = lines[:default_style['max_lines']]
+                    lines[-1] = lines[-1][:len(lines[-1]) - 3] + "..."
+
+                # Joindre les lignes avec des sauts de ligne
+                wrapped_text = '\n'.join(lines)
+
+                try:
+                    # Approche simplifiée: utiliser directement bg_color dans TextClip
+                    txt_clip = TextClip(
+                        wrapped_text,
+                        font=default_style['font'],
+                        fontsize=default_style['fontsize'],
+                        color=default_style['color'],
+                        bg_color=default_style['bg_color'],  # Fond simple sans opacité
+                        stroke_color=default_style['stroke_color'],
+                        stroke_width=default_style['stroke_width'],
+                        method='caption',
+                        align=default_style['align'],
+                        interline=default_style['interline']
+                    )
+
+                    # Positionner horizontalement selon l'alignement
+                    if default_style['align'] == 'center':
+                        x_pos = 'center'
+                    elif default_style['align'] == 'left':
+                        x_pos = default_style['margin']
+                    else:  # right
+                        x_pos = video.w - default_style['margin'] - txt_clip.w
+
+                    # Finaliser la position et le timing du clip
+                    txt_clip = txt_clip.set_position((x_pos, y_pos))
+                    txt_clip = txt_clip.set_start(start_time).set_end(end_time)
+                    subtitle_clips.append(txt_clip)
+                except Exception as e:
+                    print(f"Erreur lors de la création du sous-titre: {e}")
+                    continue
+
+        # Méthode d'affichage mot par mot
+        elif default_style['method'] == 'word_by_word':
+            # Récupérer les mots de chaque segment
+            all_words = []
+            for segment in self.current_transcription.get("segments", []):
+                if "words" in segment:
+                    all_words.extend(segment["words"])
+
+            # Si aucun mot n'a été trouvé, essayer la propriété words au niveau racine
+            if not all_words and "words" in self.current_transcription:
+                all_words = self.current_transcription.get("words", [])
+
+            # Si toujours pas de mots, revenir à la méthode par segment
+            if not all_words:
+                print("Aucun timing mot par mot trouvé. Utilisation de la méthode par segment.")
+                return self.create_subtitled_video(video_path, {**subtitle_style, 'method': 'segment'}, output_path)
+
+            # Créer un clip pour chaque mot
+            for word_info in all_words:
+                word = word_info.get("word", "").strip()
+                start = word_info.get("start", 0)
+                end = word_info.get("end", 0)
+
+                # Ignorer les mots vides
+                if not word:
+                    continue
+
+                try:
+                    # Créer le TextClip pour le mot (approche simplifiée)
+                    word_clip = TextClip(
+                        word,
+                        font=default_style['font'],
+                        fontsize=default_style['fontsize'],
+                        color=default_style['color'],
+                        bg_color=default_style['bg_color'],
+                        stroke_color=default_style['stroke_color'],
+                        stroke_width=default_style['stroke_width']
+                    )
+
+                    # Finaliser la position et le timing du clip
+                    word_clip = word_clip.set_position(('center', y_pos))
+                    word_clip = word_clip.set_start(start).set_end(end)
+                    subtitle_clips.append(word_clip)
+                except Exception as e:
+                    print(f"Erreur lors de la création du sous-titre mot: {e}")
+                    continue
+
+        # ------------------------------------------------------------
+        # 5. FINALISATION ET EXPORT
+        # ------------------------------------------------------------
+
+        # Vérifier qu'il y a des sous-titres à ajouter
+        if not subtitle_clips:
+            print("Aucun sous-titre n'a été créé. Vérifiez la transcription.")
+            return None
+
+        # Combiner la vidéo avec les sous-titres
+        print(f"Création d'une vidéo sous-titrée avec {len(subtitle_clips)} sous-titres...")
+        final_video = CompositeVideoClip([video] + subtitle_clips)
+
+        # Conserver la durée originale
+        final_video = final_video.set_duration(video.duration)
+
+        # Sauvegarder la vidéo sous-titrée
+        print(f"Sauvegarde de la vidéo sous-titrée vers: {output_path}")
+        final_video.write_videofile(
+            output_path,
+            codec=self.video_codec,
+            audio_codec=self.audio_codec,
+            temp_audiofile=f"{output_path}.temp-audio.m4a",
+            remove_temp=True,
+            threads=6
+        )
+
+        # Fermer les clips pour libérer les ressources
+        if video_path:  # Ne fermer que si nous avons créé un nouveau clip
+            video.close()
+        final_video.close()
+
+        return output_path
 
     def save_to_excel(self, df, filename, key_column='id'):
         """
@@ -474,4 +763,4 @@ audio_path = video_editor.extract_audio(video_path=video_path)
     print(video_editor.transcribe(audio_path, max_segment_gap=2))"""
 
 print(video_editor.transcribe(audio_path, max_words_per_segment=5, max_segment_duration=2))
-video_editor.create_subtitled_video()
+video_editor.create_subtitled_video(subtitle_style=video_editor.style_tiktok)

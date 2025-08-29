@@ -39,7 +39,12 @@ class YouTubeTranscriber:
             'postprocessors': [],
             'outtmpl': os.path.join(self.output_dir, '%(id)s.mp4'),
             'quiet': True,
-            'no_warnings': True
+            'no_warnings': True,
+            'nocheckcertificate': True,  # Ignorer les problèmes de certificat
+            'ignoreerrors': True,  # Ignorer les erreurs et continuer
+            'geo_bypass': True,  # Contourner les restrictions géographiques
+            'socket_timeout': 15,  # Augmenter le délai d'attente
+            'retries': 10  # Plus de tentatives en cas d'erreur
         }
 
         # Mettre à jour avec les options personnalisées
@@ -132,6 +137,13 @@ class YouTubeTranscriber:
                 # Préparer les options de téléchargement avec le titre comme nom de fichier
                 download_options = self.yt_dlp_options.copy()
                 download_options['outtmpl'] = os.path.join(self.output_dir, f"{clean_title}.mp4")
+                download_options['http_headers'] = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                }
 
                 # Effectuer le téléchargement
                 with yt_dlp.YoutubeDL(download_options) as ydl:
