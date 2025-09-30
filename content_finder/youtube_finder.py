@@ -8,6 +8,12 @@ import os
 from pathlib import Path
 import requests
 import json
+from googleapiclient.discovery import build
+import os
+import google_auth_oauthlib.flow
+import googleapiclient.discovery
+import googleapiclient.errors
+
 
 
 class YouTubeTranscriber:
@@ -31,27 +37,38 @@ class YouTubeTranscriber:
         self.whisper_model = None
         self.language = language
         self.items_data_df = None
+        self.utils_directory = os.getcwd() + '\\..\\utils'
+        self.Connection_file_name = os.path.join(self.utils_directory, 'login_data.json')
+        self.login_data = {}
+        self.get_user_login()
+        self.scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
+        self.youtube = None
 
         # Configuration de yt-dlp
         self.yt_dlp_options = {
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'merge_output_format': 'mp4',
-            'postprocessors': [],
+            'ffmpeg_location':'C:\\Users\\LucasCONGRAS\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0-full_build\\bin',
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4'
+            }],
             'outtmpl': os.path.join(self.output_dir, '%(id)s.mp4'),
             'quiet': True,
             'no_warnings': True,
-            'nocheckcertificate': True,  # Ignorer les problèmes de certificat
-            'ignoreerrors': True,  # Ignorer les erreurs et continuer
-            'geo_bypass': True,  # Contourner les restrictions géographiques
-            'socket_timeout': 15,  # Augmenter le délai d'attente
-            'retries': 10  # Plus de tentatives en cas d'erreur
+            'nocheckcertificate': True,
+            'ignoreerrors': True,
+            'geo_bypass': True,
+            'socket_timeout': 15,
+            'retries': 10,
+            'cleanup': True  # supprime les fragments audio/vidéo après fusion
         }
 
         # Mettre à jour avec les options personnalisées
         if yt_dlp_options:
             self.yt_dlp_options.update(yt_dlp_options)
 
-    def extract_video_id(self, url: str) -> str:
+    def extract_video_id(self, url: str):
         try:
 
             patterns = [
@@ -89,8 +106,8 @@ class YouTubeTranscriber:
                 print(f"Impossible d'extraire l'ID de la vidéo YouTube de l'URL: {url}")
         return video_ids
 
-    def download_video(self, video_id_or_url: str, filenamedatavideos=None, apply_filter=None) -> str:
-
+    def download_video(self, video_id_or_url: str) -> str:
+        # Déterminer l'ID et l'URL finale
         if 'youtube.com/' in video_id_or_url or 'youtu.be/' in video_id_or_url:
             video_id = self.extract_video_id(video_id_or_url)
         else:
@@ -98,80 +115,50 @@ class YouTubeTranscriber:
 
         url = f"https://www.youtube.com/watch?v={video_id}"
 
-        if self.items_data_df is None and filenamedatavideos is not None:
-            try:
-                self.items_data_df = self.load_from_excel(filenamedatavideos)
-            except:
-                self.items_data_df = pd.DataFrame()
-
-        data_media = self.items_data_df[self.items_data_df['id'] == video_id]
-        if apply_filter:
-            for key in apply_filter:
-                if key in data_media.columns:
-                    try:
-                        data_media = data_media.query(apply_filter[key])
-                    except:
-                        pass
-
-        if not data_media.empty or apply_filter is None:
-
-            # D'abord obtenir les informations de la vidéo pour récupérer le titre
+        try:
+            # Récupérer les informations de la vidéo
             info_options = {
                 'quiet': True,
                 'no_warnings': True,
                 'skip_download': True,
             }
+            with yt_dlp.YoutubeDL(info_options) as ydl:
+                info = ydl.extract_info(url, download=False)
 
-            try:
-                # Récupérer les informations de la vidéo
-                with yt_dlp.YoutubeDL(info_options) as ydl:
-                    info = ydl.extract_info(url, download=False)
+            # Nettoyer le titre pour en faire un nom de fichier valide
+            video_title = info.get('title', f'video_{video_id}')
+            clean_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)[:100]
 
-                # Récupérer et nettoyer le titre pour un nom de fichier valide
-                video_title = info.get('title', f'video_{video_id}')
+            # Options de téléchargement
+            download_options = self.yt_dlp_options.copy()
+            download_options['outtmpl'] = os.path.join(self.output_dir, f"{clean_title}.mp4")
+            download_options['http_headers'] = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+            }
 
-                # Remplacer les caractères non autorisés dans les noms de fichiers
-                clean_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)
-                clean_title = clean_title[:100]  # Limiter la longueur du titre
+            # Télécharger la vidéo
+            with yt_dlp.YoutubeDL(download_options) as ydl:
+                ydl.download([url])
 
-                # Préparer les options de téléchargement avec le titre comme nom de fichier
-                download_options = self.yt_dlp_options.copy()
-                download_options['outtmpl'] = os.path.join(self.output_dir, f"{clean_title}.mp4")
-                download_options['http_headers'] = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-us,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'Connection': 'keep-alive',
-                }
+            # Vérifier la présence du fichier
+            output_path = os.path.join(self.output_dir, f"{clean_title}.mp4")
+            if not os.path.exists(output_path):
+                possible_files = [f for f in os.listdir(self.output_dir) if f.startswith(clean_title[:50]) and f.endswith('.mp4')]
+                if possible_files:
+                    output_path = os.path.join(self.output_dir, possible_files[0])
+                else:
+                    raise FileNotFoundError(f"Le fichier téléchargé est introuvable: {output_path}")
 
-                # Effectuer le téléchargement
-                with yt_dlp.YoutubeDL(download_options) as ydl:
-                    ydl.download([url])
+            return output_path
 
-                # Chemin du fichier téléchargé
-                output_path = os.path.join(self.output_dir, f"{clean_title}.mp4")
+        except Exception as e:
+            raise Exception(f"Erreur lors du téléchargement de la vidéo {video_id}: {str(e)}")
 
-                # Vérifier si le fichier existe
-                if not os.path.exists(output_path):
-                    # Si le fichier n'existe pas avec le nom exact, chercher avec un début similaire
-                    # (yt-dlp peut ajouter des infos additionnelles au nom dans certains cas)
-                    possible_files = [f for f in os.listdir(self.output_dir) if f.startswith(clean_title[:50]) and f.endswith('.mp4')]
-
-                    if possible_files:
-                        output_path = os.path.join(self.output_dir, possible_files[0])
-                    else:
-                        raise FileNotFoundError(f"Le fichier téléchargé est introuvable: {output_path}")
-
-                return output_path
-
-            except Exception as e:
-                raise Exception(f"Erreur lors du téléchargement de la vidéo {video_id}: {str(e)}")
-
-        else:
-            print(f"La video {video_id}ne correspond pas aux critères de filtrage ou n'existe pas dans le fichier {filenamedatavideos}.")
-
-    def download_several_videos(self, video_ids_or_urls: list, filenamedatavideos, apply_filter) -> list:
+    def download_several_videos(self, video_ids_or_urls: list):
         """
         Télécharge plusieurs vidéos YouTube à partir d'une liste d'IDs ou d'URLs.
 
@@ -183,7 +170,7 @@ class YouTubeTranscriber:
         """
         threads = []
         for index, video_id_or_url in enumerate(video_ids_or_urls):
-            thread = threading.Thread(target=self.download_video, args=(video_id_or_url, filenamedatavideos, apply_filter))
+            thread = threading.Thread(target=self.download_video, args=(video_id_or_url,))
             thread.start()
             threads.append(thread)
 
@@ -279,7 +266,7 @@ class YouTubeTranscriber:
         except Exception as e:
             raise Exception(f"Erreur lors de la récupération des informations de la vidéo {video_id}: {str(e)}")
 
-    def get_quality_filters(self) -> dict:
+    def get_quality_filters(self):
         """
         Retourne un dictionnaire de filtres pour sélectionner des vidéos de qualité.
         Les valeurs sont des seuils minimums pour chaque métrique.
@@ -307,6 +294,61 @@ class YouTubeTranscriber:
             #"upload_date": ">20220101", # Téléchargée après le 1er janvier 2022
         }
 
+    def get_authenticated_service(self):
+        flow = google_auth_oauthlib.flow.Flow.from_client_config(
+            client_config={
+                "installed": {
+                    "client_id": self.login_data['Client_id'],
+                    "client_secret": self.login_data['Secret'],
+                    "redirect_uris": ["http://localhost"]
+                }
+            },
+            scopes=self.scopes
+        )
+
+        auth_url, _ = flow.authorization_url(prompt='consent')
+
+        print(f"Allez sur ce lien pour autoriser l'accès : {auth_url}")
+        code = input("Entrez le code d'autorisation : ")
+
+        flow.fetch_token(code=code)
+
+        credentials = flow.credentials
+        youtube = googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
+
+        return youtube
+
+    def get_subscriptions(self, max_results=10):
+        if self.youtube is None:
+            try:
+                self.get_authenticated_service()
+            except Exception as e:
+                print(e)
+                return
+
+            self.get_subscriptions(max_results)
+
+        request = self.youtube.subscriptions().list(
+            part="snippet",
+            mine=True,  # Récupérer les abonnements de l'utilisateur connecté
+            maxResults=max_results
+        )
+
+        response = request.execute()
+
+        # Afficher les abonnements
+        subscriptions = []
+        for item in response["items"]:
+            channel_title = item["snippet"]["title"]
+            channel_id = item["snippet"]["resourceId"]["channelId"]
+            subscriptions.append({
+                "channel_title": channel_title,
+                "channel_id": channel_id,
+                "channel_url": f"https://www.youtube.com/channel/{channel_id}"
+            })
+
+        return subscriptions
+
     def search_youtube_videos(self, query: str, max_results: int = 10, excel_filename="DataYoutubeVideos.xlsx") -> list:
         """
         Recherche des vidéos YouTube et retourne les liens des x premiers résultats.
@@ -325,7 +367,7 @@ class YouTubeTranscriber:
             videos_data = pd.DataFrame()
 
             # Augmenter légèrement le nombre de résultats recherchés pour compenser les vidéos indisponibles
-            search_max = max_results + 5
+            search_max = max_results + 0
 
             # Utilisation de yt-dlp pour la recherche
             search_url = f"ytsearch{search_max}:{query}"
@@ -384,6 +426,46 @@ class YouTubeTranscriber:
                 return videos
             else:
                 raise Exception(f"Erreur lors de la recherche YouTube: {str(e)}")
+
+    def search_trending_by_category(self, region='FR', max_results=20):
+        yt = build('youtube', 'v3', developerKey=self.login_data['API_Key'])
+
+        # Récupérer les catégories disponibles
+        categories_req = yt.videoCategories().list(
+            part="snippet",
+            regionCode=region
+        )
+        categories_res = categories_req.execute()
+
+        categories = [
+            cat['id'] for cat in categories_res.get('items', [])
+            if cat['snippet']['assignable']
+        ]
+
+        if not categories:
+            return []
+
+        per_cat = max_results // len(categories) or 1
+        results = []
+
+        for cat_id in categories:
+            try:
+                req = yt.videos().list(
+                    part='snippet,contentDetails,statistics',
+                    chart='mostPopular',
+                    regionCode=region,
+                    videoCategoryId=cat_id,
+                    maxResults=per_cat
+                )
+                res = req.execute()
+                results.extend(
+                    [f"https://www.youtube.com/watch?v={item['id']}" for item in res.get('items', [])]
+                )
+            except Exception as e:
+                # Pas d'emoji → texte simple compatible Windows
+                print(f"[WARN] Catégorie {cat_id} ignorée : {e}")
+
+        return results
 
     def split_video(self, video_id_or_url_or_filename: str, duration: int = 61, use_timecodes: bool = False, datafilename: str = None) -> list:
         """
@@ -893,14 +975,25 @@ class YouTubeTranscriber:
         except Exception:
             return None
 
+    def get_user_login(self):
+        try:
+            login_data_file = open(self.Connection_file_name, 'r')
+            self.login_data = json.load(login_data_file)['Youtube']
+            login_data_file.close()
+        except:
+            print("Identifiants de connexion non trouvés, veuillez les ajouter dans le fichier 'login_data.json' dans le dossier utils.")
+
+
 
 def StartYoutubeBot():
     return YouTubeTranscriber()
 
 
 bot = StartYoutubeBot()
-urls = bot.search_youtube_videos('Tu mourras moins bete', max_results=1, excel_filename="DataYoutubeVideos.xlsx")
-urls = ["https://www.youtube.com/shorts/TP33ZOPbTko"]
-bot.download_several_videos(urls, "DataYoutubeVideos.xlsx", apply_filter=None)  #bot.get_quality_filters()
-print(bot.get_automatic_captions(urls[0], language='fr'))
+channels = bot.get_subscriptions()
+#urls = bot.search_youtube_videos('abc', max_results=1, excel_filename="DataYoutubeVideos.xlsx")
+#urls = bot.search_trending_by_category(max_results=1)
+#print(urls)
+#bot.download_several_videos(urls)  #bot.get_quality_filters()
+#print(bot.get_automatic_captions(urls[0], language='fr'))
 #bot.split_all_videos_in_a_folder(bot.output_dir, duration=61, use_timecodes=True, datafilename="DataYoutubeVideos.xlsx")

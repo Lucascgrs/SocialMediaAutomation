@@ -1,1 +1,8 @@
-**/login_data.json
+# Ignorer tout par défaut
+*
+
+# Mais garder les répertoires (pour descendre dans l'arborescence)
+!*/
+
+# Ne pas ignorer les fichiers Python
+!*.py
