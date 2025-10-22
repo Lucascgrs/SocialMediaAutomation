@@ -4,15 +4,16 @@ import pandas as pd
 import threading
 from moviepy.editor import VideoFileClip
 import re
-import os
 from pathlib import Path
 import requests
 import json
+import googleapiclient.errors
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import os
-import google_auth_oauthlib.flow
-import googleapiclient.discovery
-import googleapiclient.errors
+import pickle
+import sys
 
 
 
@@ -41,7 +42,9 @@ class YouTubeTranscriber:
         self.Connection_file_name = os.path.join(self.utils_directory, 'login_data.json')
         self.login_data = {}
         self.get_user_login()
+        self.credentials = None
         self.scopes = ["https://www.googleapis.com/auth/youtube.readonly"]
+        self.token_pickle = "token.pickle"
         self.youtube = None
 
         # Configuration de yt-dlp
@@ -106,7 +109,7 @@ class YouTubeTranscriber:
                 print(f"Impossible d'extraire l'ID de la vidéo YouTube de l'URL: {url}")
         return video_ids
 
-    def download_video(self, video_id_or_url: str) -> str:
+    def download_video(self, video_id_or_url: str, dir_inside_videos: str="") -> str:
         # Déterminer l'ID et l'URL finale
         if 'youtube.com/' in video_id_or_url or 'youtu.be/' in video_id_or_url:
             video_id = self.extract_video_id(video_id_or_url)
@@ -131,7 +134,7 @@ class YouTubeTranscriber:
 
             # Options de téléchargement
             download_options = self.yt_dlp_options.copy()
-            download_options['outtmpl'] = os.path.join(self.output_dir, f"{clean_title}.mp4")
+            download_options['outtmpl'] = os.path.join(self.output_dir + "/" + dir_inside_videos, f"{clean_title}.mp4")
             download_options['http_headers'] = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -145,20 +148,13 @@ class YouTubeTranscriber:
                 ydl.download([url])
 
             # Vérifier la présence du fichier
-            output_path = os.path.join(self.output_dir, f"{clean_title}.mp4")
-            if not os.path.exists(output_path):
-                possible_files = [f for f in os.listdir(self.output_dir) if f.startswith(clean_title[:50]) and f.endswith('.mp4')]
-                if possible_files:
-                    output_path = os.path.join(self.output_dir, possible_files[0])
-                else:
-                    raise FileNotFoundError(f"Le fichier téléchargé est introuvable: {output_path}")
-
+            output_path = os.path.join(self.output_dir + "/" + dir_inside_videos, f"{clean_title}.mp4")
             return output_path
 
         except Exception as e:
             raise Exception(f"Erreur lors du téléchargement de la vidéo {video_id}: {str(e)}")
 
-    def download_several_videos(self, video_ids_or_urls: list):
+    def download_several_videos(self, video_ids_or_urls: list, dir_inside_videos):
         """
         Télécharge plusieurs vidéos YouTube à partir d'une liste d'IDs ou d'URLs.
 
@@ -170,12 +166,17 @@ class YouTubeTranscriber:
         """
         threads = []
         for index, video_id_or_url in enumerate(video_ids_or_urls):
-            thread = threading.Thread(target=self.download_video, args=(video_id_or_url,))
+            thread = threading.Thread(target=self.download_video, args=(video_id_or_url, dir_inside_videos))
             thread.start()
             threads.append(thread)
 
         for thread in threads:
             thread.join()
+
+    def download_videos_from_subscriptions(self, n_videos=1, n_subscriptions=5):
+        list_latest_videos, _ = self.get_latest_videos_from_subscriptions(n_videos=n_videos, n_subscriptions=n_subscriptions)
+        for sub in list_latest_videos:
+            self.download_several_videos(list_latest_videos[sub], sub)
 
     def collect_videos_data(self, video_id_or_url: str) -> pd.DataFrame:
         """
@@ -294,45 +295,53 @@ class YouTubeTranscriber:
             #"upload_date": ">20220101", # Téléchargée après le 1er janvier 2022
         }
 
-    def get_authenticated_service(self):
-        flow = google_auth_oauthlib.flow.Flow.from_client_config(
-            client_config={
-                "installed": {
-                    "client_id": self.login_data['Client_id'],
-                    "client_secret": self.login_data['Secret'],
-                    "redirect_uris": ["http://localhost"]
-                }
-            },
-            scopes=self.scopes
-        )
+    def authenticate(self):
+        """
+        S'authentifie à l'API YouTube en utilisant OAuth 2.0.
 
-        auth_url, _ = flow.authorization_url(prompt='consent')
+        Returns:
+            googleapiclient.discovery.Resource: Instance de l'API YouTube
+        """
+        # Préparer les données OAuth à partir du dictionnaire
+        client_config = {
+            "installed": {  # Utiliser "installed" pour une application de bureau
+                "client_id": self.login_data["Client_id"],
+                "client_secret": self.login_data["Secret"],
+                "redirect_uris": ["http://localhost"],  # Simplifier les URIs de redirection
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        }
 
-        print(f"Allez sur ce lien pour autoriser l'accès : {auth_url}")
-        code = input("Entrez le code d'autorisation : ")
+        # Initialiser le flow OAuth pour l'authentification
+        flow = InstalledAppFlow.from_client_config(
+            client_config, self.scopes)
 
-        flow.fetch_token(code=code)
+        # Utiliser un port spécifique qui est configuré dans la console Google Cloud
+        credentials = flow.run_local_server(port=8080)
 
-        credentials = flow.credentials
-        youtube = googleapiclient.discovery.build("youtube", "v3", credentials=credentials)
+        # Construire le service API YouTube
+        self.youtube = build('youtube', 'v3', credentials=credentials)
+        return self.youtube
 
-        return youtube
-
-    def get_subscriptions(self, max_results=10):
-        if self.youtube is None:
+    def get_subscriptions(self, n_subscriptions=5):
+        if not self.youtube:
             try:
-                self.get_authenticated_service()
+                self.authenticate()
             except Exception as e:
                 print(e)
                 return
 
-            self.get_subscriptions(max_results)
-
         request = self.youtube.subscriptions().list(
             part="snippet",
             mine=True,  # Récupérer les abonnements de l'utilisateur connecté
-            maxResults=max_results
+            maxResults=n_subscriptions
         )
+
+        if sys.stdout.encoding != 'utf-8':
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 
         response = request.execute()
 
@@ -348,6 +357,71 @@ class YouTubeTranscriber:
             })
 
         return subscriptions
+
+    def get_latest_videos_from_subscriptions(self, n_videos=1, n_subscriptions=5):
+        """
+        Récupère les N dernières vidéos de chaque chaîne YouTube à laquelle l'utilisateur est abonné.
+
+        Args:
+            :param n_videos:
+            :param n_subscriptions:
+
+        Returns:
+            dict: Dictionnaire avec le titre de la chaîne comme clé et une liste d'IDs de vidéos comme valeur
+        """
+        # Récupérer d'abord les abonnements
+        subscriptions = self.get_subscriptions(n_subscriptions=n_subscriptions)
+
+        if not subscriptions:
+            print("Aucun abonnement trouvé ou erreur d'authentification.")
+            return {}
+
+        # Dictionnaire qui contiendra les résultats
+        latest_videos = {}
+        list_latest_videos = {}
+
+        # Pour chaque chaîne, récupérer les dernières vidéos
+        for channel in subscriptions:
+            channel_title = channel["channel_title"]
+            channel_id = channel["channel_id"]
+
+            try:
+                # Rechercher les dernières vidéos de la chaîne
+                request = self.youtube.search().list(
+                    part="snippet",
+                    channelId=channel_id,
+                    maxResults=n_videos,
+                    order="date",  # Trier par date (plus récentes d'abord)
+                    type="video"  # Ne récupérer que les vidéos (pas les playlists ou les chaînes)
+                )
+
+                response = request.execute()
+
+                # Extraire les IDs des vidéos et autres informations utiles
+                videos_info = []
+                id_list = []
+                for item in response.get("items", []):
+                    video_id = item["id"]["videoId"]
+                    video_title = item["snippet"]["title"]
+                    video_publish_date = item["snippet"]["publishedAt"]
+
+                    videos_info.append({
+                        "video_id": video_id,
+                        "title": video_title,
+                        "published_at": video_publish_date,
+                        "url": f"https://www.youtube.com/watch?v={video_id}"
+                    })
+
+                    id_list.append(video_id)
+
+                latest_videos[channel_title] = videos_info
+                list_latest_videos[channel_title] = id_list
+
+            except Exception as e:
+                print(f"Erreur lors de la récupération des vidéos pour {channel_title}: {e}")
+                latest_videos[channel_title] = []
+
+        return list_latest_videos, latest_videos
 
     def search_youtube_videos(self, query: str, max_results: int = 10, excel_filename="DataYoutubeVideos.xlsx") -> list:
         """
@@ -426,46 +500,6 @@ class YouTubeTranscriber:
                 return videos
             else:
                 raise Exception(f"Erreur lors de la recherche YouTube: {str(e)}")
-
-    def search_trending_by_category(self, region='FR', max_results=20):
-        yt = build('youtube', 'v3', developerKey=self.login_data['API_Key'])
-
-        # Récupérer les catégories disponibles
-        categories_req = yt.videoCategories().list(
-            part="snippet",
-            regionCode=region
-        )
-        categories_res = categories_req.execute()
-
-        categories = [
-            cat['id'] for cat in categories_res.get('items', [])
-            if cat['snippet']['assignable']
-        ]
-
-        if not categories:
-            return []
-
-        per_cat = max_results // len(categories) or 1
-        results = []
-
-        for cat_id in categories:
-            try:
-                req = yt.videos().list(
-                    part='snippet,contentDetails,statistics',
-                    chart='mostPopular',
-                    regionCode=region,
-                    videoCategoryId=cat_id,
-                    maxResults=per_cat
-                )
-                res = req.execute()
-                results.extend(
-                    [f"https://www.youtube.com/watch?v={item['id']}" for item in res.get('items', [])]
-                )
-            except Exception as e:
-                # Pas d'emoji → texte simple compatible Windows
-                print(f"[WARN] Catégorie {cat_id} ignorée : {e}")
-
-        return results
 
     def split_video(self, video_id_or_url_or_filename: str, duration: int = 61, use_timecodes: bool = False, datafilename: str = None) -> list:
         """
@@ -785,7 +819,7 @@ class YouTubeTranscriber:
         except Exception as e:
             print(e)
 
-    def parse_youtube_captions(self, caption_xml: str, max_segment_gap: float = 0.7) -> Dict[str, Any]:
+    def parse_youtube_captions(self, caption_xml: str, max_segment_gap: float = 0.7):
         """
         Parse les sous-titres automatiques YouTube au format XML.
 
@@ -990,7 +1024,7 @@ def StartYoutubeBot():
 
 
 bot = StartYoutubeBot()
-channels = bot.get_subscriptions()
+channels = bot.download_videos_from_subscriptions(n_videos=1, n_subscriptions=200)
 #urls = bot.search_youtube_videos('abc', max_results=1, excel_filename="DataYoutubeVideos.xlsx")
 #urls = bot.search_trending_by_category(max_results=1)
 #print(urls)
