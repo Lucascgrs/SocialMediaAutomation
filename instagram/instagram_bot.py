@@ -1,133 +1,114 @@
 from instagrapi import Client
 import time
 import random
-import os
 import json
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+
 
 class InstagramBot:
+    """
+    Classe gérant les interactions avec l'API Instagram via instagrapi.
+    Permet le login, la récupération d'infos, l'envoi de messages et l'upload de médias.
+    """
+
     def __init__(self):
         self.client = Client()
-        self.utils_directory = os.getcwd() + '\\..\\utils'
-        self.Connection_file_name = os.path.join(self.utils_directory, 'login_data.json')
-        self.login_data = {}
+        # Utilisation de pathlib pour gérer les chemins de manière robuste et cross-platform
+        # On remonte d'un niveau (..) puis on va dans 'utils'
+        self.base_dir = Path(__file__).parent.parent
+        self.credentials_path = self.base_dir / 'utils' / 'login_data.json'
+        self.password: Optional[str] = None
 
-    def login(self, account_identifier):
+    # =========================================================================
+    # AUTHENTIFICATION
+    # =========================================================================
+
+    def _load_password(self, account_identifier: str) -> bool:
+        """
+        Charge le mot de passe depuis le fichier JSON de configuration.
+
+        Args:
+            account_identifier: Le nom d'utilisateur ou l'identifiant du compte dans le JSON.
+
+        Returns:
+            bool: True si le mot de passe est chargé, False sinon.
+        """
+        if not self.credentials_path.exists():
+            print(f"[!] Le fichier de configuration n'existe pas : {self.credentials_path}")
+            return False
+
         try:
-            self.get_user_login(account_identifier)
-            self.client.login(account_identifier, self.login_data)
-            print("[✔] Connexion réussie")
-        except Exception as e:
-            print(f"[✘] Erreur connexion : {e}")
+            with open(self.credentials_path, 'r', encoding='utf-8') as file:
+                data = json.load(file)
+                # On suppose que la structure est {'Instagram': {'username': 'password'}}
+                self.password = data.get('Instagram', {}).get(account_identifier)
 
-    # --------- UTILISATEUR ---------
-    def get_user_info(self, username):
-        """Récupère les infos d'un utilisateur (contourne le bug update_headers)"""
+            if not self.password:
+                print(f"[!] Mot de passe introuvable pour '{account_identifier}' dans le fichier JSON.")
+                return False
+            return True
+
+        except json.JSONDecodeError:
+            print(f"[!] Erreur de décodage du fichier JSON : {self.credentials_path}")
+            return False
+        except Exception as e:
+            print(f"[✘] Erreur lors de la lecture des identifiants : {e}")
+            return False
+
+    def login(self, username: str):
+        """
+        Connecte le client Instagram.
+
+        Args:
+            username: Le nom d'utilisateur Instagram.
+        """
+        try:
+            if self._load_password(username):
+                self.client.login(username, self.password)
+                print(f"[✔] Connexion réussie pour : {username}")
+            else:
+                print("[✘] Échec de la connexion : Mot de passe manquant.")
+        except Exception as e:
+            print(f"[✘] Erreur critique lors de la connexion : {e}")
+
+    # =========================================================================
+    # UTILISATEUR (INFO & FOLLOW)
+    # =========================================================================
+
+    def get_user_info(self, username: str) -> Optional[Dict[str, Any]]:
+        """
+        Récupère les informations complètes d'un utilisateur.
+        """
         try:
             user_id = self.client.user_id_from_username(username)
             info = self.client.user_info(user_id)
+            # model_dump() est spécifique aux versions récentes de Pydantic utilisées par instagrapi
             return info.model_dump()
         except Exception as e:
             print(f"[✘] Impossible de récupérer les infos pour {username} : {e}")
             return None
 
-    def get_user_followers(self, username, amount=10):
+    def get_user_followers(self, username: str, amount: int = 10) -> Dict[str, Any]:
+        """Récupère la liste des abonnés d'un utilisateur."""
         try:
             user_id = self.client.user_id_from_username(username)
             return self.client.user_followers(user_id, amount)
         except Exception as e:
             print(f"[✘] Erreur récupération followers : {e}")
-            return []
+            return {}
 
-    def get_user_following(self, username, amount=10):
+    def get_user_following(self, username: str, amount: int = 10) -> Dict[str, Any]:
+        """Récupère la liste des abonnements d'un utilisateur."""
         try:
             user_id = self.client.user_id_from_username(username)
             return self.client.user_following(user_id, amount)
         except Exception as e:
             print(f"[✘] Erreur récupération following : {e}")
-            return []
+            return {}
 
-    # --------- MESSAGES ---------
-    def send_dm(self, username, message):
-        try:
-
-            user_id = self.client.user_id_from_username(username)
-
-            self.client.direct_send(message, [user_id])
-            print(f"[✔] Message envoyé à {user_id}")
-        except Exception as e:
-            print(f"[✘] Erreur envoi message : {e}")
-
-    # --------- MÉDIA ---------
-    def upload_photo(self, path, caption=""):
-        try:
-            self.client.photo_upload(path, caption)
-            print("[✔] Photo envoyée")
-        except Exception as e:
-            print(f"[✘] Erreur upload photo : {e}")
-
-    def upload_video(self, path, caption=""):
-        """
-        Upload vidéo avec gestion des erreurs améliorée
-
-        Args:
-            path: Chemin vers le fichier vidéo
-            caption: Légende de la vidéo
-        """
-        try:
-            # Option 1: Utiliser l'upload avec thumbnail spécifique
-            import os
-            from pathlib import Path
-
-            video_path = Path(path)
-            thumbnail_path = f"{path}.jpg"  # Le chemin vers la miniature est déjà généré
-
-            # Vérifier si la miniature existe, sinon créer une
-            if not os.path.exists(thumbnail_path):
-                print(f"Thumbnail non trouvée, utilisant une miniature par défaut")
-                # Utiliser la méthode intégrée qui essaie de créer une thumbnail
-                self.client.video_upload(path, caption)
-            else:
-                # Utiliser la miniature existante
-                print(f"Utilisation de la thumbnail existante : {thumbnail_path}")
-                self.client.video_upload(
-                    path,
-                    caption,
-                    thumbnail=thumbnail_path
-                )
-            print("[✔] Vidéo envoyée")
-
-        except ValueError as ve:
-            # Gérer spécifiquement l'erreur de validation Pydantic
-            if "scans_profile" in str(ve):
-                print("[!] Erreur API Instagram (scans_profile manquant)")
-                print("[i] Essai avec la méthode alternative...")
-                try:
-                    # Option 2: Alternative - poster comme reels
-                    self.client.clip_upload(path, caption)
-                    print("[✔] Vidéo envoyée comme Reels")
-                    return
-                except Exception as e2:
-                    print(f"[✘] L'alternative a aussi échoué : {e2}")
-            print(f"[✘] Erreur upload vidéo : {ve}")
-        except Exception as e:
-            print(f"[✘] Erreur upload vidéo : {e}")
-
-    def like_media(self, media_id):
-        try:
-            self.client.media_like(media_id)
-            print(f"[✔] Like sur {media_id}")
-        except Exception as e:
-            print(f"[✘] Erreur like : {e}")
-
-    def comment_media(self, media_id, comment):
-        try:
-            self.client.media_comment(media_id, comment)
-            print(f"[✔] Commentaire posté sur {media_id}")
-        except Exception as e:
-            print(f"[✘] Erreur commentaire : {e}")
-
-    # --------- SUIVI ---------
-    def follow_user(self, username):
+    def follow_user(self, username: str):
+        """S'abonne à un utilisateur."""
         try:
             user_id = self.client.user_id_from_username(username)
             self.client.user_follow(user_id)
@@ -135,7 +116,8 @@ class InstagramBot:
         except Exception as e:
             print(f"[✘] Erreur follow : {e}")
 
-    def unfollow_user(self, username):
+    def unfollow_user(self, username: str):
+        """Se désabonne d'un utilisateur."""
         try:
             user_id = self.client.user_id_from_username(username)
             self.client.user_unfollow(user_id)
@@ -143,42 +125,124 @@ class InstagramBot:
         except Exception as e:
             print(f"[✘] Erreur unfollow : {e}")
 
-    # --------- STORIES ---------
-    def upload_story(self, path):
+    # =========================================================================
+    # MESSAGERIE (DM)
+    # =========================================================================
+
+    def send_dm(self, username: str, message: str):
+        """
+        Envoie un message privé (DM) à un utilisateur.
+        """
         try:
+            user_id = self.client.user_id_from_username(username)
+            self.client.direct_send(message, [user_id])
+            print(f"[✔] Message envoyé à {username} (ID: {user_id})")
+        except Exception as e:
+            print(f"[✘] Erreur envoi message à {username} : {e}")
+
+    # =========================================================================
+    # GESTION DES MÉDIAS (UPLOAD & INTERACTION)
+    # =========================================================================
+
+    def upload_photo(self, path: str, caption: str = ""):
+        """Upload une photo sur le feed."""
+        try:
+            self.client.photo_upload(path, caption)
+            print("[✔] Photo envoyée avec succès")
+        except Exception as e:
+            print(f"[✘] Erreur upload photo : {e}")
+
+    def upload_video(self, path: str, caption: str = ""):
+        """
+        Upload une vidéo sur le feed. Tente d'utiliser une miniature si disponible,
+        sinon bascule sur la méthode par défaut ou Reels en cas d'erreur.
+
+        Args:
+            path: Chemin absolu ou relatif vers le fichier vidéo.
+            caption: Légende de la publication.
+        """
+        video_path = Path(path)
+        # Convention: ma_video.mp4 -> ma_video.mp4.jpg
+        thumbnail_path = video_path.with_name(f"{video_path.name}.jpg")
+
+        try:
+            if thumbnail_path.exists():
+                print(f"[i] Miniature trouvée : {thumbnail_path}")
+                self.client.video_upload(path, caption, thumbnail=str(thumbnail_path))
+            else:
+                print(f"[i] Pas de miniature personnalisée trouvée, utilisation par défaut.")
+                self.client.video_upload(path, caption)
+
+            print("[✔] Vidéo envoyée")
+
+        except ValueError as ve:
+            # Gestion spécifique pour l'erreur 'scans_profile' connue dans instagrapi
+            if "scans_profile" in str(ve):
+                print("[!] Erreur API Instagram (scans_profile manquant détecté).")
+                print("[i] Tentative d'upload via la méthode Reels (clip_upload)...")
+                try:
+                    self.client.clip_upload(path, caption)
+                    print("[✔] Vidéo envoyée comme Reels (Alternative)")
+                except Exception as e2:
+                    print(f"[✘] L'alternative Reels a aussi échoué : {e2}")
+            else:
+                print(f"[✘] Erreur ValueError lors de l'upload vidéo : {ve}")
+        except Exception as e:
+            print(f"[✘] Erreur générale upload vidéo : {e}")
+
+    def upload_story(self, path: str):
+        """Upload une photo ou vidéo en Story."""
+        try:
+            # Note: photo_upload_to_story gère souvent aussi les vidéos courtes selon la version
+            # Si besoin de vidéo spécifique: client.video_upload_to_story(path)
             self.client.photo_upload_to_story(path)
             print("[✔] Story envoyée")
         except Exception as e:
-            print(f"[✘] Erreur story : {e}")
+            print(f"[✘] Erreur upload story : {e}")
 
-    # --------- UTILITAIRES ---------
-    def sleep_random(self, min_sec=2, max_sec=5):
+    def like_media(self, media_id: str):
+        """Like un média via son ID."""
+        try:
+            self.client.media_like(media_id)
+            print(f"[✔] Like ajouté sur {media_id}")
+        except Exception as e:
+            print(f"[✘] Erreur like : {e}")
+
+    def comment_media(self, media_id: str, comment: str):
+        """Poste un commentaire sur un média."""
+        try:
+            self.client.media_comment(media_id, comment)
+            print(f"[✔] Commentaire posté sur {media_id}")
+        except Exception as e:
+            print(f"[✘] Erreur commentaire : {e}")
+
+    # =========================================================================
+    # UTILITAIRES
+    # =========================================================================
+
+    def sleep_random(self, min_sec: int = 2, max_sec: int = 5):
+        """Pause l'exécution pendant un temps aléatoire pour imiter un humain."""
         t = random.randint(min_sec, max_sec)
         print(f"[⏳] Pause {t} secondes...")
         time.sleep(t)
 
-    def get_user_login(self, account_identifier):
-        try:
-            login_data_file = open(self.Connection_file_name, 'r')
-            self.login_data = json.load(login_data_file)['Instagram'][account_identifier]
-            login_data_file.close()
-        except:
-            print("Identifiants de connexion non trouvés, veuillez les ajouter dans le fichier 'login_data.json' dans le dossier utils.")
 
+# =========================================================================
+# FONCTION PRINCIPALE
+# =========================================================================
 
-def StartInstagramBot(account_identifier):
+def start_instagram_bot(account_identifier: str) -> InstagramBot:
+    """Initialise le bot et lance la connexion."""
     bot = InstagramBot()
     bot.login(account_identifier)
     return bot
 
 
-"""bot = StartInstagramBot("elodie__.bqt")
-
-user_info = bot.get_user_info("instagram")
-if user_info:
-    print(f"Nom complet : {user_info.get('full_name')}")
-    print(f"Bio : {user_info.get('biography')}")
-
-# 7. Test DM (⚠ à remplacer par un vrai username)
-print("\n=== Message privé ===")
-bot.send_dm("lucas_cgrs", "📩 Test DM via instagrapi")"""
+if __name__ == "__main__":
+    # Bloc de test pour le développement
+    # Ne s'exécute que si le fichier est lancé directement
+    pass
+    # Exemple d'utilisation :
+    # bot = start_instagram_bot("mon_compte_instagram")
+    # info = bot.get_user_info("instagram")
+    # print(info)

@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -6,11 +5,8 @@ import re
 import requests
 import subprocess
 import os
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
-import tempfile
+from moviepy.editor import VideoFileClip
 import sys
-import shutil
-import cv2
 
 from moviepy.config import change_settings
 change_settings({"IMAGEMAGICK_BINARY": r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"})
@@ -219,6 +215,8 @@ class VideoEditor:
                 "fp16": False,
                 "max_initial_timestamp": None
             }
+
+            #self.load_whisper_model()
 
             response = requests.post("http://127.0.0.1:5000/transcribe", json={"audio_path": audio_path, "options": transcribe_options})
 
@@ -754,9 +752,10 @@ def StartVideoEditor(language: Optional[str] = "fr", whisper_model: Optional[str
 
 video_editor = StartVideoEditor(whisper_model="medium", language="fr")
 
-video_path = "C:\\Users\lucas\PycharmProjects\PROJECT\SocialMediaAutomation\\videos\Les meufs vs les gars 🤣🤣 Audio_ @jeremouquoi #shorts #animation #humour #drole #sketch.mp4"
+video_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "videos", "Fin de carrière.mp4"))
 video_editor.load_video(video_path=video_path)
 audio_path = video_editor.extract_audio(video_path=video_path)
+
 #paths = video_editor.split_video(video_path=video_path)
 """for path in paths:
     audio_path = video_editor.extract_audio(path)

@@ -14,6 +14,13 @@ from googleapiclient.discovery import build
 import os
 import pickle
 import sys
+import random
+import time
+import os
+import re
+import yt_dlp
+import html
+import xml.etree.ElementTree as ET
 
 
 
@@ -109,8 +116,7 @@ class YouTubeTranscriber:
                 print(f"Impossible d'extraire l'ID de la vidéo YouTube de l'URL: {url}")
         return video_ids
 
-    def download_video(self, video_id_or_url: str, dir_inside_videos: str="") -> str:
-        # Déterminer l'ID et l'URL finale
+    def download_video(self, video_id_or_url: str, dir_inside_videos: str = "") -> str:
         if 'youtube.com/' in video_id_or_url or 'youtu.be/' in video_id_or_url:
             video_id = self.extract_video_id(video_id_or_url)
         else:
@@ -119,42 +125,32 @@ class YouTubeTranscriber:
         url = f"https://www.youtube.com/watch?v={video_id}"
 
         try:
-            # Récupérer les informations de la vidéo
-            info_options = {
-                'quiet': True,
-                'no_warnings': True,
-                'skip_download': True,
-            }
-            with yt_dlp.YoutubeDL(info_options) as ydl:
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'skip_download': True}) as ydl:
                 info = ydl.extract_info(url, download=False)
 
-            # Nettoyer le titre pour en faire un nom de fichier valide
-            video_title = info.get('title', f'video_{video_id}')
-            clean_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)[:100]
+            clean_title = re.sub(r'[\\/*?:"<>|]', "_", info.get('title', f'video_{video_id}'))[:100]
+            output_path = os.path.join(self.output_dir, dir_inside_videos, f"{clean_title}.mp4")
 
-            # Options de téléchargement
             download_options = self.yt_dlp_options.copy()
-            download_options['outtmpl'] = os.path.join(self.output_dir + "/" + dir_inside_videos, f"{clean_title}.mp4")
-            download_options['http_headers'] = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-            }
+            download_options.update({
+                'outtmpl': output_path,
+                'format': 'bv*+ba/b',
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                }
+            })
 
-            # Télécharger la vidéo
             with yt_dlp.YoutubeDL(download_options) as ydl:
                 ydl.download([url])
 
-            # Vérifier la présence du fichier
-            output_path = os.path.join(self.output_dir + "/" + dir_inside_videos, f"{clean_title}.mp4")
             return output_path
 
         except Exception as e:
             raise Exception(f"Erreur lors du téléchargement de la vidéo {video_id}: {str(e)}")
 
-    def download_several_videos(self, video_ids_or_urls: list, dir_inside_videos):
+    def download_several_videos(self, video_ids_or_urls: list, dir_inside_videos=""):
         """
         Télécharge plusieurs vidéos YouTube à partir d'une liste d'IDs ou d'URLs.
 
@@ -173,8 +169,8 @@ class YouTubeTranscriber:
         for thread in threads:
             thread.join()
 
-    def download_videos_from_subscriptions(self, n_videos=1, n_subscriptions=5):
-        list_latest_videos, _ = self.get_latest_videos_from_subscriptions(n_videos=n_videos, n_subscriptions=n_subscriptions)
+    def download_videos_from_subscriptions(self, n_videos=1, n_subscriptions=5, youtubers_list=None):
+        list_latest_videos, _ = self.get_latest_videos_from_subscriptions(n_videos=n_videos, n_subscriptions=n_subscriptions, youtubers_list=youtubers_list)
         for sub in list_latest_videos:
             self.download_several_videos(list_latest_videos[sub], sub)
 
@@ -358,46 +354,72 @@ class YouTubeTranscriber:
 
         return subscriptions
 
-    def get_latest_videos_from_subscriptions(self, n_videos=1, n_subscriptions=5):
+    def get_latest_videos_from_subscriptions(self, n_videos=1, n_subscriptions=5, youtubers_list=None):
         """
-        Récupère les N dernières vidéos de chaque chaîne YouTube à laquelle l'utilisateur est abonné.
+        Récupère les N dernières vidéos :
+        - De chaque chaîne YouTube à laquelle l'utilisateur est abonné
+        - Et/ou de chaque créateur spécifié dans une liste de noms
 
         Args:
-            :param n_videos:
-            :param n_subscriptions:
+            n_videos (int): Nombre de vidéos à récupérer par chaîne.
+            n_subscriptions (int): Nombre maximum d'abonnements à parcourir.
+            youtubers_list (list, optional): Liste de noms de créateurs YouTube à inclure.
 
         Returns:
-            dict: Dictionnaire avec le titre de la chaîne comme clé et une liste d'IDs de vidéos comme valeur
+            tuple(dict, dict):
+                list_latest_videos -> {nom_chaîne: [ids_videos]}
+                latest_videos -> {nom_chaîne: [infos_videos]}
         """
-        # Récupérer d'abord les abonnements
+        # --- Étape 1 : Récupérer les abonnements ---
         subscriptions = self.get_subscriptions(n_subscriptions=n_subscriptions)
-
         if not subscriptions:
-            print("Aucun abonnement trouvé ou erreur d'authentification.")
-            return {}
+            subscriptions = []
 
-        # Dictionnaire qui contiendra les résultats
+        # --- Étape 2 : Ajouter les chaînes trouvées à partir des noms manuels ---
+        if youtubers_list:
+            for name in youtubers_list:
+                try:
+                    search_request = self.youtube.search().list(
+                        part="snippet",
+                        q=name,
+                        type="channel",
+                        maxResults=1
+                    )
+                    search_response = search_request.execute()
+                    items = search_response.get("items", [])
+                    if items:
+                        channel = items[0]
+                        channel_id = channel["id"]["channelId"]
+                        channel_title = channel["snippet"]["title"]
+                        # Éviter les doublons
+                        if not any(sub["channel_id"] == channel_id for sub in subscriptions):
+                            subscriptions.append({
+                                "channel_id": channel_id,
+                                "channel_title": channel_title
+                            })
+                    else:
+                        print(f"Aucune chaîne trouvée pour '{name}'.")
+                except Exception as e:
+                    print(f"Erreur lors de la recherche de la chaîne '{name}': {e}")
+
+        # --- Étape 3 : Récupérer les dernières vidéos pour chaque chaîne ---
         latest_videos = {}
         list_latest_videos = {}
 
-        # Pour chaque chaîne, récupérer les dernières vidéos
         for channel in subscriptions:
             channel_title = channel["channel_title"]
             channel_id = channel["channel_id"]
 
             try:
-                # Rechercher les dernières vidéos de la chaîne
                 request = self.youtube.search().list(
                     part="snippet",
                     channelId=channel_id,
                     maxResults=n_videos,
-                    order="date",  # Trier par date (plus récentes d'abord)
-                    type="video"  # Ne récupérer que les vidéos (pas les playlists ou les chaînes)
+                    order="date",
+                    type="video"
                 )
-
                 response = request.execute()
 
-                # Extraire les IDs des vidéos et autres informations utiles
                 videos_info = []
                 id_list = []
                 for item in response.get("items", []):
@@ -411,7 +433,6 @@ class YouTubeTranscriber:
                         "published_at": video_publish_date,
                         "url": f"https://www.youtube.com/watch?v={video_id}"
                     })
-
                     id_list.append(video_id)
 
                 latest_videos[channel_title] = videos_info
@@ -751,181 +772,115 @@ class YouTubeTranscriber:
 
         return output_files
 
-    def get_automatic_captions(self, video_id_or_url: str, language: str = 'fr', datafilename: str = None, max_segment_gap: float = 1) -> str:
+    def get_automatic_captions(self, video_id_or_url: str, language: str = 'fr', max_segment_gap: float = 1):
         """
-        Récupère les sous-titres automatiques d'une vidéo YouTube.
-
-        Args:
-            video_id_or_url: ID YouTube ou URL complète
-            language: Code de langue pour les sous-titres (par défaut: 'fr')
-            datafilename: Nom du fichier Excel contenant les données des vidéos (optionnel)
-
-        Returns:
-            dict: Contenu des sous-titres automatiques
-
-        Raises:
-            Exception: Si les sous-titres ne peuvent pas être récupérés
+        Récupère les sous-titres automatiques d'une vidéo YouTube, avec cache et gestion du format .vtt ou .xml.
         """
-        # Extraire l'ID vidéo si une URL est fournie
-        video_id = self.extract_video_id(video_id_or_url) if ('youtube.com/' in video_id_or_url or 'youtu.be/' in video_id_or_url) else video_id_or_url
+        # --- Préparation ---
+        video_id = self.extract_video_id(video_id_or_url) if any(
+            s in video_id_or_url for s in ['youtube.com/', 'youtu.be/']) else video_id_or_url
+        cache_dir = os.path.join(self.output_dir, "captions_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        base_path = os.path.join(cache_dir, f"{video_id}_{language}")
 
-        # Récupérer les données de la vidéo
-        video_data = None
+        # --- 1. Vérifier le cache ---
+        for ext in ['.vtt', '.srv1', '.srv2', '.xml']:
+            cached_path = base_path + ext
+            if os.path.exists(cached_path):
+                print(f"[Cache] Sous-titres trouvés : {cached_path}")
+                return self._parse_caption_file(cached_path, video_id, language, max_segment_gap)
 
-        if datafilename is None:
-            # Collecter les données directement depuis YouTube
-            videos_data = self.collect_videos_data(video_id)
+        # --- 2. Télécharger via yt_dlp ---
+        print(f"[yt_dlp] Téléchargement des sous-titres pour {video_id} ({language})...")
+        outtmpl = os.path.join(cache_dir, f"{video_id}.%(ext)s")
+        opts = {
+            'quiet': True, 'no_warnings': True, 'skip_download': True,
+            'writeautomaticsub': True, 'subtitleslangs': [language],
+            'outtmpl': outtmpl
+        }
 
-            if not videos_data.empty and 'id' in videos_data.columns:
-                video_data = videos_data[videos_data['id'] == video_id]
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+
+        # Trouver le fichier téléchargé
+        found = next((os.path.join(cache_dir, f"{video_id}.{language}{ext}")
+                      for ext in ['.vtt', '.srv1', '.srv2']
+                      if os.path.exists(os.path.join(cache_dir, f"{video_id}.{language}{ext}"))), None)
+        if not found:
+            raise Exception(f"Aucun sous-titre trouvé pour {video_id}")
+
+        final_path = base_path + os.path.splitext(found)[1]
+        os.rename(found, final_path)
+        print(f"[yt_dlp] Sous-titres mis en cache : {final_path}")
+
+        return self._parse_caption_file(final_path, video_id, language, max_segment_gap)
+
+    def _parse_caption_file(self, filepath: str, video_id: str, language: str, max_segment_gap: float):
+        """Détecte le format (.vtt ou XML) et parse le contenu."""
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read().strip()
+
+        if content.startswith("<?xml") or "<transcript" in content:
+            parsed = self._parse_xml_captions(content, max_segment_gap)
         else:
-            # Charger les données depuis le fichier Excel
-            df = self.load_from_excel(datafilename)
+            parsed = self._parse_vtt_captions(content)
 
-            if 'id' in df.columns:
-                video_data = df[df['id'] == video_id]
+        parsed.update({
+            "source": "youtube_automatic_captions",
+            "video_id": video_id,
+            "language": language
+        })
+        return parsed
 
-        # Vérifier si les données ont été trouvées
-        if video_data is None or video_data.empty:
-            raise Exception(f"Impossible de trouver les données pour la vidéo: {video_id}")
+    def _parse_vtt_captions(self, text: str):
+        """Parse simple du format WebVTT (.vtt)."""
+        captions, current, start, end = [], [], None, None
+        for line in text.splitlines():
+            line = line.strip()
+            if re.match(r"^\d{2}:\d{2}:\d{2}\.\d{3}", line):
+                if start and current:
+                    captions.append({"start": start, "end": end, "text": " ".join(current)})
+                    current = []
+                times = line.split(" --> ")
+                start, end = times[0], times[1] if len(times) > 1 else None
+            elif line and not line.startswith("WEBVTT"):
+                current.append(line)
+        if start and current:
+            captions.append({"start": start, "end": end, "text": " ".join(current)})
+        return {"segments": captions}
 
-        # Récupérer l'URL du modèle de sous-titres automatiques
-        if 'automatic_caption_url_template' not in video_data.columns:
-            raise Exception(f"La colonne 'automatic_caption_url_template' est manquante dans les données")
-
-        caption_url_template = video_data['automatic_caption_url_template'].iloc[0]
-
-        if not caption_url_template or pd.isna(caption_url_template):
-            raise Exception(f"Pas de sous-titres automatiques disponibles pour cette vidéo")
-
-        # Remplacer le code de langue dans l'URL
-        caption_url = caption_url_template.replace("{LANG_CODE}", language)
-
+    def _parse_xml_captions(self, xml_text: str, max_gap: float):
+        """Parse XML des sous-titres automatiques YouTube."""
         try:
-            # Faire une requête pour récupérer les sous-titres
-            response = requests.get(caption_url)
-            response.raise_for_status()  # Lever une exception si la requête échoue
+            root = ET.fromstring(xml_text)
+            words, full_text, segments = [], "", []
+            for el in root.findall(".//text"):
+                start = int(el.get("t", "0")) / 1000
+                dur = int(el.get("d", "0")) / 1000
+                end = start + dur
+                text = html.unescape(el.text or "")
+                append = el.get("append") == "1"
+                words.append({"word": text, "start": start, "end": end, "is_append": append})
+                full_text += ("" if append else " ") + text
 
-            # Parser les sous-titres XML
-            parsed_captions = self.parse_youtube_captions(response.text, max_segment_gap)
+            if not words:
+                return {"text": "", "segments": []}
 
-            # Mettre à jour avec les métadonnées
-            parsed_captions["source"] = "youtube_automatic_captions"
-            parsed_captions["video_id"] = video_id
-            parsed_captions["language"] = language
-
-            return parsed_captions
-
-        except Exception as e:
-            print(e)
-
-    def parse_youtube_captions(self, caption_xml: str, max_segment_gap: float = 0.7):
-        """
-        Parse les sous-titres automatiques YouTube au format XML.
-
-        Args:
-            caption_xml: Contenu XML des sous-titres
-            max_segment_gap: Temps maximum en secondes entre les mots avant de créer un nouveau segment
-
-        Returns:
-            Dict: Résultat structuré avec texte et segments temporels, similaire à la sortie de transcribe()
-        """
-        try:
-            from xml.etree import ElementTree as ET
-            import html
-
-            # Analyser le XML
-            root = ET.fromstring(caption_xml)
-
-            # Extraire tous les éléments <text>
-            text_elements = root.findall(".//text")
-
-            # Convertir en format de mots avec timestamps
-            words = []
-            full_text = ""
-
-            for element in text_elements:
-                # Extraire les attributs temporels et le texte
-                start_ms = int(element.get("t", "0"))
-                duration_ms = int(element.get("d", "0"))
-                end_ms = start_ms + duration_ms
-
-                # Convertir en secondes
-                start_sec = start_ms / 1000
-                end_sec = end_ms / 1000
-
-                # Extraire et décodifier le texte
-                text = html.unescape(element.text) if element.text else ""
-
-                # Déterminer si c'est un append ou un nouveau texte
-                is_append = element.get("append") == "1"
-
-                # Ajouter à la liste des mots
-                word_info = {
-                    "word": text,
-                    "start": start_sec,
-                    "end": end_sec,
-                    "is_append": is_append
-                }
-                words.append(word_info)
-
-                # Ajouter au texte complet
-                if not is_append:
-                    full_text += " " + text if full_text else text
+            seg = {"start": words[0]["start"], "end": words[0]["end"], "text": words[0]["word"], "words": [words[0]]}
+            for w in words[1:]:
+                if w["start"] - seg["end"] > max_gap or not w["is_append"]:
+                    segments.append(seg)
+                    seg = {"start": w["start"], "end": w["end"], "text": w["word"], "words": [w]}
                 else:
-                    full_text += text
+                    seg["text"] += w["word"];
+                    seg["end"] = w["end"];
+                    seg["words"].append(w)
+            segments.append(seg)
 
-            # Créer des segments basés sur max_segment_gap
-            segments = []
-            if words:
-                current_segment = {
-                    "start": words[0]["start"],
-                    "end": words[0]["end"],
-                    "text": words[0]["word"],
-                    "words": [words[0]]
-                }
-
-                prev_end = words[0]["end"]
-
-                # Parcourir les mots restants
-                for word in words[1:]:
-                    word_start = word["start"]
-
-                    # Si l'écart est trop grand ou si ce n'est pas un append, créer un nouveau segment
-                    if word_start - prev_end > max_segment_gap or not word["is_append"]:
-                        current_segment["end"] = prev_end
-                        segments.append(current_segment.copy())
-
-                        # Nouveau segment
-                        current_segment = {
-                            "start": word_start,
-                            "end": word["end"],
-                            "text": word["word"],
-                            "words": [word]
-                        }
-                    else:
-                        # Ajouter le mot au segment actuel
-                        current_segment["text"] += word["word"]
-                        current_segment["end"] = word["end"]
-                        current_segment["words"].append(word)
-
-                    prev_end = word["end"]
-
-                # Ajouter le dernier segment
-                segments.append(current_segment)
-
-            # Construire le résultat final
-            result = {
-                "text": full_text.strip(),
-                "segments": segments,
-                "language": "fr",  # Présumer la langue basée sur l'entrée
-                "words": words
-            }
-
-            return result
-
+            return {"text": full_text.strip(), "segments": segments, "words": words}
         except Exception as e:
-            print(e)
+            print(f"Erreur parsing XML : {e}")
+            return {"text": "", "segments": []}
 
     def save_to_excel(self, df, filename, key_column='id'):
         """
@@ -1024,10 +979,11 @@ def StartYoutubeBot():
 
 
 bot = StartYoutubeBot()
-channels = bot.download_videos_from_subscriptions(n_videos=1, n_subscriptions=200)
-#urls = bot.search_youtube_videos('abc', max_results=1, excel_filename="DataYoutubeVideos.xlsx")
+#channels = bot.download_videos_from_subscriptions(n_videos=1, n_subscriptions=150, youtubers_list=None)
+urls = bot.search_youtube_videos('Face Webcam Boy.', max_results=1, excel_filename="DataYoutubeVideos.xlsx")
 #urls = bot.search_trending_by_category(max_results=1)
-#print(urls)
-#bot.download_several_videos(urls)  #bot.get_quality_filters()
+print(urls)
+#urls = ["https://www.youtube.com/shorts/ATBN3lFF804"]
+bot.download_several_videos(urls)  #bot.get_quality_filters()
 #print(bot.get_automatic_captions(urls[0], language='fr'))
 #bot.split_all_videos_in_a_folder(bot.output_dir, duration=61, use_timecodes=True, datafilename="DataYoutubeVideos.xlsx")
