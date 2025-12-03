@@ -57,11 +57,11 @@ class VideoEditor:
         self.styles = {
             'tiktok': {
                 'font': 'Impact',
-                'fontsize': 65,
+                'fontsize': 70,
                 'color': 'yellow',
                 'stroke_color': 'black',
                 'stroke_width': 3.0,
-                'position_y': 0.70,
+                'position_y': 0.30,
                 'method': 'segment',
                 'max_lines': 1
             }
