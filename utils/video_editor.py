@@ -11,6 +11,13 @@ from typing import Optional, List, Dict, Any, Tuple
 import pandas as pd
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, AudioFileClip
 from moviepy.config import change_settings
+IMAGEMAGICK_BINARY = r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"
+
+if os.path.exists(IMAGEMAGICK_BINARY):
+    change_settings({"IMAGEMAGICK_BINARY": IMAGEMAGICK_BINARY})
+else:
+    print(f"🛑 ERREUR CRITIQUE : ImageMagick introuvable au chemin : {IMAGEMAGICK_BINARY}")
+
 
 # Configuration du logger
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
@@ -48,20 +55,15 @@ class VideoEditor:
 
         # Styles de sous-titres prédéfinis
         self.styles = {
-            'elegant': {
-                'font': 'Arial', 'fontsize': 24, 'color': 'white',
-                'bg_color': 'black', 'opacity': 0.6, 'position': 'bottom',
-                'method': 'segment', 'max_lines': 2
-            },
             'tiktok': {
-                'font': 'Impact', 'fontsize': 45, 'color': 'white',
-                'stroke_color': 'black', 'stroke_width': 2.0,
-                'position': 'center', 'method': 'segment', 'max_lines': 1
-            },
-            'karaoke': {
-                'font': 'Arial-Bold', 'fontsize': 30, 'color': 'yellow',
-                'stroke_color': 'black', 'stroke_width': 1.0,
-                'position': 'bottom', 'method': 'word_by_word'
+                'font': 'Impact',
+                'fontsize': 65,
+                'color': 'yellow',
+                'stroke_color': 'black',
+                'stroke_width': 3.0,
+                'position_y': 0.70,
+                'method': 'segment',
+                'max_lines': 1
             }
         }
 
@@ -365,32 +367,58 @@ class VideoEditor:
         """Helper pour créer un TextClip avec gestion des erreurs."""
         try:
             # Wrapper le texte si trop long
-            # Estimation grossière : largeur / (taille_police * 0.6)
             char_limit = int((max_w - 40) / (style['fontsize'] * 0.5))
             wrapped_text = "\n".join(textwrap.wrap(text, width=char_limit)[:style.get('max_lines', 2)])
 
-            return TextClip(
+            bg_color = style.get('bg_color') if style.get('bg_color') else 'transparent'
+
+            stroke_color = style.get('stroke_color')
+            stroke_width = style.get('stroke_width', 0)
+
+            if not stroke_color:
+                stroke_width = 0
+                stroke_color = None
+
+            textclip = TextClip(
                 wrapped_text,
-                font=style['font'],
+                font=style.get('font', 'Arial'),
                 fontsize=style['fontsize'],
                 color=style['color'],
-                bg_color=style.get('bg_color'),
-                stroke_color=style.get('stroke_color'),
-                stroke_width=style.get('stroke_width', 0),
-                method='caption', align='center'
+                bg_color=bg_color,
+                stroke_color=stroke_color,
+                stroke_width=stroke_width,
+                method='label',
+                align='center'
             )
-        except Exception:
+
+            return textclip
+
+        except Exception as e:
+            print(f"ERREUR TextClip : {e}")
             return None
 
     def _position_clip(self, clip, style, video_size):
-        """Positionne le clip selon le style."""
+        """Positionne le clip selon le style (supporte % de hauteur)."""
         w, h = video_size
-        pos = style.get('position', 'bottom')
 
+        # Si une position Y en pourcentage est fournie (ex: 0.70 pour 70%)
+        if 'position_y' in style:
+            perc = style['position_y']
+            # On limite entre 0 et 1
+            perc = max(0.0, min(1.0, perc))
+
+            # Calcul en pixels : Hauteur * pourcentage
+            # On centre le texte verticalement sur ce point
+            y_pos = int(h * perc - (clip.h / 2))
+
+            return clip.set_position(('center', y_pos))
+
+        # Fallback sur l'ancien système (top/bottom) si pas de pourcentage
+        pos = style.get('position', 'bottom')
         if pos == 'bottom':
-            return clip.set_position(('center', h - clip.h - 50))
+            return clip.set_position(('center', h - clip.h - 80))
         elif pos == 'top':
-            return clip.set_position(('center', 50))
+            return clip.set_position(('center', 80))
         else:
             return clip.set_position('center')
 
