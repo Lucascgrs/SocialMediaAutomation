@@ -103,25 +103,77 @@ class RedditCollector:
 
     def search_subreddits(self, keywords: List[str], limit: int = 10, save_excel: bool = True) -> pd.DataFrame:
         """
-        Recherche des subreddits basés sur une liste de mots-clés.
+        Recherche intelligente des subreddits :
+        1. Cherche d'abord strictement dans le NOM du subreddit (Priorité absolue).
+        2. Complète avec une recherche large, MAIS vérifie que le mot-clé est dans le Titre ou la Description.
         """
         if not self.reddit: return pd.DataFrame()
 
         all_subs_data = []
+        seen_names = set()
 
         for keyword in keywords:
-            logger.info(f"Recherche de subreddits pour : {keyword}")
-            try:
-                results = self.reddit.subreddits.search(keyword, limit=limit)
+            logger.info(f"Recherche intelligente pour : '{keyword}'")
+            keyword_lower = keyword.lower().strip()
 
-                for sub in results:
+            subs_found_for_keyword = []
+
+            try:
+                # On demande BEAUCOUP de résultats (x10) pour pouvoir filtrer agressivement ensuite
+                # Cela permet d'aller chercher les "petits" subs pertinents cachés derrière les gros subs populaires
+                broad_results = list(self.reddit.subreddits.search(keyword, limit=limit * 10))
+
+                # --- ETAPE 1 : Filtrage Strict (Le nom contient le mot-clé) ---
+                strict_matches = []
+                for sub in broad_results:
+                    if keyword_lower in sub.display_name.lower():
+                        strict_matches.append(sub)
+
+                # On trie les stricts par nombre d'abonnés
+                strict_matches.sort(key=lambda x: getattr(x, 'subscribers', 0) or 0, reverse=True)
+
+                for sub in strict_matches:
+                    if len(subs_found_for_keyword) >= limit: break
+                    if sub.display_name not in seen_names:
+                        subs_found_for_keyword.append(sub)
+                        seen_names.add(sub.display_name)
+
+                logger.info(f" -> {len(subs_found_for_keyword)} résultats stricts (Nom) trouvés.")
+
+                # --- ETAPE 2 : Complément Sélectif ---
+                if len(subs_found_for_keyword) < limit:
+                    remaining_needed = limit - len(subs_found_for_keyword)
+
+                    # On trie le reste par pertinence (abonnés)
+                    broad_results.sort(key=lambda x: getattr(x, 'subscribers', 0) or 0, reverse=True)
+
+                    for sub in broad_results:
+                        if remaining_needed <= 0: break
+
+                        if sub.display_name in seen_names:
+                            continue
+
+                        # VÉRIFICATION SUPPLÉMENTAIRE :
+                        # Le mot clé DOIT être dans le titre public ou la description
+                        # Sinon on rejette (ça évite r/france pour "espace")
+                        title_match = keyword_lower in (sub.title or "").lower()
+                        desc_match = keyword_lower in (sub.public_description or "").lower()
+
+                        if title_match or desc_match:
+                            subs_found_for_keyword.append(sub)
+                            seen_names.add(sub.display_name)
+                            remaining_needed -= 1
+
+                logger.info(f" -> Total retenu pour '{keyword}': {len(subs_found_for_keyword)}")
+
+                # Extraction des données
+                for sub in subs_found_for_keyword:
                     try:
-                        # On saute les NSFW si besoin, ou on peut filtrer plus tard
                         data = {
                             'name': sub.display_name,
                             'title': sub.title,
                             'subscribers': getattr(sub, 'subscribers', 0),
-                            'description': getattr(sub, 'public_description', ''),
+                            'description': getattr(sub, 'public_description', '') or '',
                             'created_utc': datetime.fromtimestamp(sub.created_utc).strftime('%Y-%m-%d'),
                             'is_nsfw': sub.over18,
                             'url': f"https://reddit.com{sub.url}"
@@ -133,7 +185,7 @@ class RedditCollector:
             except Exception as e:
                 logger.error(f"Erreur recherche mot-clé {keyword}: {e}")
 
-        df = pd.DataFrame(all_subs_data).drop_duplicates(subset=['name'])
+        df = pd.DataFrame(all_subs_data)
 
         if save_excel and not df.empty:
             self.save_to_excel(df, "DataSubReddits.xlsx", key_column='name')
@@ -144,25 +196,52 @@ class RedditCollector:
     # COLLECTE DES POSTS
     # =========================================================================
 
-    def get_subreddit_posts(self, sub_names: List[str], limit: int = 50) -> pd.DataFrame:
+    def get_subreddit_posts(self, sub_names: List[str], target_limit: int = 10, content_type: str = 'any') -> pd.DataFrame:
         """
-        Récupère les posts de plusieurs subreddits et retourne un DataFrame brut.
+        Récupère les posts de plusieurs subreddits jusqu'à atteindre la limite désirée
+        pour un type de contenu spécifique.
+
+        Args:
+            sub_names: Liste des noms de subreddits.
+            target_limit: Nombre de posts SOUHAITÉS par subreddit (après filtrage).
+            content_type: 'video', 'photo' ou 'any'.
         """
         if not self.reddit: return pd.DataFrame()
 
         all_posts = []
 
         for sub_name in sub_names:
-            logger.info(f"Récupération des posts de r/{sub_name}...")
+            logger.info(f"Récupération r/{sub_name} (Cible: {target_limit} {content_type}s)...")
+
+            valid_posts_for_sub = []
             try:
                 subreddit = self.reddit.subreddit(sub_name)
-                # On peut changer .top() par .hot() ou .new() selon le besoin
-                posts = subreddit.top(limit=limit, time_filter='all')
 
-                for post in posts:
+                # On utilise un générateur pour parcourir les posts un par un sans limite initiale stricte
+                # mais on met une limite de sécurité (ex: 500) pour ne pas boucler à l'infini si le sub est vide
+                post_generator = subreddit.top(limit=500, time_filter='all')
+
+                for post in post_generator:
+                    # Si on a assez de posts pour ce sub, on arrête
+                    if len(valid_posts_for_sub) >= target_limit:
+                        break
+
                     post_data = self._extract_post_data(post)
-                    if post_data:
-                        all_posts.append(post_data)
+                    if not post_data:
+                        continue
+
+                    is_valid = True
+                    if content_type == 'video' and not post_data['is_video']:
+                        is_valid = False
+                    elif content_type == 'photo' and post_data[
+                        'is_video']:  # Si c'est une vidéo, ce n'est pas une photo
+                        is_valid = False
+
+                    if is_valid:
+                        valid_posts_for_sub.append(post_data)
+
+                logger.info(f" -> Trouvé {len(valid_posts_for_sub)} posts valides sur r/{sub_name}")
+                all_posts.extend(valid_posts_for_sub)
 
             except Exception as e:
                 logger.error(f"Erreur sur r/{sub_name}: {e}")

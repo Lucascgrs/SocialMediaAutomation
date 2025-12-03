@@ -78,30 +78,33 @@ def find_content(
         try:
             reddit_bot = RedditCollector(account_identifier_reddit)
 
+            # Déterminer le type prioritaire pour la recherche
+            # Si on veut les deux, on laisse 'any', sinon on précise
+            search_type = 'any'
+            if 'video' in content_types and 'photo' not in content_types:
+                search_type = 'video'
+            elif 'photo' in content_types and 'video' not in content_types:
+                search_type = 'photo'
+
             # 1. Trouver les subreddits pertinents
             subs_df = reddit_bot.search_subreddits(keywords=topics, limit=subreddit_max, save_excel=False)
 
             if not subs_df.empty:
                 sub_names = subs_df['name'].tolist()
 
-                # 2. Récupérer les posts
-                posts_df = reddit_bot.get_subreddit_posts(sub_names, limit=max_results_by_sub)
+                posts_df = reddit_bot.get_subreddit_posts(
+                    sub_names,
+                    target_limit=max_results_by_sub,
+                    content_type=search_type
+                )
 
                 if not posts_df.empty:
-                    # 3. Filtrer par type (Photo/Vidéo)
-                    if 'video' in content_types and 'photo' not in content_types:
-                        # On ne veut QUE des vidéos
-                        posts_df = posts_df[posts_df['is_video'] == True]
-                    elif 'photo' in content_types and 'video' not in content_types:
-                        # On ne veut QUE des photos
-                        posts_df = posts_df[posts_df['is_video'] == False]
-
-                    # 4. Appliquer les filtres personnalisés (Score, Ratio...)
+                    # 3. Appliquer les filtres de qualité (Score, Ratio...)
                     if reddit_filters:
                         posts_df = reddit_bot.filter_posts(posts_df, reddit_filters)
 
                     results['reddit'] = posts_df
-                    logger.info(f"Reddit : {len(posts_df)} posts retenus.")
+                    logger.info(f"Reddit : {len(posts_df)} posts retenus au total.")
 
         except Exception as e:
             logger.error(f"Erreur lors de la recherche Reddit : {e}")
