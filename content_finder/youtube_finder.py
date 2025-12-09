@@ -158,46 +158,105 @@ class YouTubeManager:
     # RECHERCHE & DATA (Sans dépendance Excel en lecture)
     # =========================================================================
 
-    def search_videos(self, query: str, max_results: int = 5, save_excel: bool = True) -> List[str]:
-        """
-        Recherche des vidéos via yt-dlp (pas de quota API).
-        Retourne une liste d'URLs.
-        Optionnellement, sauvegarde les infos dans un Excel pour consultation.
-        """
-        search_query = f"ytsearch{max_results}:{query}"
-        opts = {
-            'quiet': True,
-            'extract_flat': True,
-            'skip_download': True,
-            'ignoreerrors': True
-        }
+    # =========================================================================
+    # RECHERCHE & DATA (Version Filtrée)
+    # =========================================================================
 
+    def search_videos(self, query: str, max_results: int = 5, min_duration: int = 0, max_duration: int = None, save_excel: bool = True) -> List[str]:
+        """
+        Recherche des vidéos avec filtrage par durée et boucle de récupération.
+        Continue de chercher tant que le nombre de vidéos valides n'est pas atteint.
+        """
         found_urls = []
+        seen_ids = set()  # Pour éviter les doublons si on relance la recherche
         video_data_list = []
 
-        logger.info(f"Recherche de : {query}")
+        # On commence par chercher 10x le nombre demandé, puis on augmentera si besoin
+        current_search_depth = max(20, max_results * 10)
+        max_search_depth_limit = 300  # Sécurité : on ne scannera pas plus de 300 vidéos pour éviter une boucle infinie
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            try:
-                result = ydl.extract_info(search_query, download=False)
-                if 'entries' in result:
-                    for entry in result['entries']:
-                        if not entry: continue
-                        url = entry.get('url')
-                        if url:
+        logger.info(f"Recherche YouTube '{query}' (Cible: {max_results}, Durée: {min_duration}-{max_duration}s)")
+
+        while len(found_urls) < max_results and current_search_depth <= max_search_depth_limit:
+
+            search_query = f"ytsearch{current_search_depth}:{query}"
+
+            opts = {
+                'quiet': True,
+                'extract_flat': True,
+                'skip_download': True,
+                'ignoreerrors': True
+            }
+
+            # Indicateur pour savoir si on a trouvé de nouvelles vidéos dans cette passe
+            new_videos_found_in_pass = False
+
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                try:
+                    result = ydl.extract_info(search_query, download=False)
+
+                    if 'entries' in result:
+                        for entry in result['entries']:
+                            # Si quota atteint, on arrête tout immédiatement
+                            if len(found_urls) >= max_results:
+                                break
+
+                            if not entry: continue
+
+                            vid_id = entry.get('id')
+                            if vid_id in seen_ids:
+                                continue  # Déjà traité
+
+                            seen_ids.add(vid_id)
+
+                            # --- FILTRAGE ---
+                            duration = entry.get('duration')
+                            url = entry.get('url')
+
+                            # 1. On ignore les vidéos sans durée (souvent des Lives en cours)
+                            if not duration:
+                                continue
+
+                                # 2. Filtre Min
+                            if min_duration and duration < min_duration:
+                                continue
+
+                            # 3. Filtre Max
+                            if max_duration and duration > max_duration:
+                                continue
+
+                            # Vidéo valide !
                             found_urls.append(url)
-                            # Collecte infos pour Excel (informatif)
+                            new_videos_found_in_pass = True
+
                             video_data_list.append({
-                                'id': entry.get('id'),
+                                'id': vid_id,
                                 'title': entry.get('title'),
                                 'url': url,
-                                'duration': entry.get('duration'),
-                                'uploader': entry.get('uploader'),
-                                'view_count': entry.get('view_count'),
+                                'duration': duration,
                                 'search_query': query
                             })
-            except Exception as e:
-                logger.error(f"Erreur recherche : {e}")
+
+                except Exception as e:
+                    logger.error(f"Erreur recherche : {e}")
+                    break  # En cas d'erreur critique API, on sort du while
+
+            # Vérification de sortie de boucle
+            if len(found_urls) >= max_results:
+                break
+
+            # Si on n'a rien trouvé de nouveau malgré l'augmentation de la profondeur,
+            # c'est que YouTube n'a plus rien de pertinent à proposer.
+            if not new_videos_found_in_pass:
+                logger.warning(
+                    f"Plus de nouveaux résultats pertinents pour '{query}' après {current_search_depth} éléments.")
+                break
+
+            # Si on n'a pas assez de vidéos, on augmente la profondeur de recherche pour le prochain tour
+            logger.info(f" -> Pas assez de vidéos ({len(found_urls)}/{max_results}). Élargissement de la recherche...")
+            current_search_depth += 50
+
+        logger.info(f" -> {len(found_urls)} vidéos valides trouvées sur YouTube pour '{query}'.")
 
         if save_excel and video_data_list:
             self._save_to_excel(pd.DataFrame(video_data_list), "DataYoutubeVideos.xlsx")
@@ -445,8 +504,8 @@ if __name__ == "__main__":
     print("Vidéos trouvées :", urls)
 
     # Téléchargement
-    # if urls:
-    #     bot.download_video(urls[0])
+    if urls:
+         bot.download_video("https://www.youtube.com/watch?v=242A9AIZ3TY")
 
     # Split (découpe la vidéo téléchargée ou via URL)
     # bot.split_video(urls[0], duration=30, use_chapters=False)

@@ -442,9 +442,9 @@ if __name__ == "__main__":
     # Exemple
     editor = VideoEditor()
     # 1. Charger
-    editor.load_video("C:\\Users\\LucasCONGRAS\\PycharmProjects\\PythonProject\\PROJECT\\SocialMediaAutomation\\videos\\Fin de carrière.mp4")
+    editor.load_video("C:\\Users\\LucasCONGRAS\\PycharmProjects\\PythonProject\\PROJECT\\SocialMediaAutomation\\videos\\J'ai codé un algorithme qui reconnaît les gens dans le métro_242A9AIZ3TY.mp4")
     # 2. Extraire Audio
-    wav_path = editor.extract_audio("C:\\Users\\LucasCONGRAS\\PycharmProjects\\PythonProject\\PROJECT\\SocialMediaAutomation\\videos\\Fin de carrière.mp4")
+    wav_path = editor.extract_audio("C:\\Users\\LucasCONGRAS\\PycharmProjects\\PythonProject\\PROJECT\\SocialMediaAutomation\\videos\\J'ai codé un algorithme qui reconnaît les gens dans le métro_242A9AIZ3TY.mp4")
     # 3. Transcrire (Nécessite le serveur Whisper lancé)
     if wav_path:
         res = editor.transcribe(wav_path, max_words=4)

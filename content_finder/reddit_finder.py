@@ -101,70 +101,52 @@ class RedditCollector:
     # RECHERCHE DE SUBREDDITS
     # =========================================================================
 
-    def search_subreddits(self, keywords: List[str], limit: int = 10, save_excel: bool = True) -> pd.DataFrame:
+    from typing import List
+    from datetime import datetime
+    import pandas as pd
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    def search_subreddits(
+            self,
+            keywords: List[str],
+            limit: int = 10,
+            save_excel: bool = True
+    ) -> pd.DataFrame:
         """
-        Recherche intelligente des subreddits :
-        1. Cherche d'abord strictement dans le NOM du subreddit (Priorité absolue).
-        2. Complète avec une recherche large, MAIS vérifie que le mot-clé est dans le Titre ou la Description.
+        Recherche des subreddits à partir d'une liste de mots-clés.
+
+        :param keywords: liste de mots-clés à rechercher
+        :param limit: nombre maximum de subreddits retenus par mot-clé
+        :param save_excel: sauvegarde du résultat dans un fichier Excel
+        :return: DataFrame des subreddits trouvés
         """
-        if not self.reddit: return pd.DataFrame()
 
         all_subs_data = []
-        seen_names = set()
 
         for keyword in keywords:
-            logger.info(f"Recherche intelligente pour : '{keyword}'")
-            keyword_lower = keyword.lower().strip()
-
-            subs_found_for_keyword = []
+            logger.info(f"Recherche de subreddits pour le mot-clé : '{keyword}'")
 
             try:
-                # On demande BEAUCOUP de résultats (x10) pour pouvoir filtrer agressivement ensuite
-                # Cela permet d'aller chercher les "petits" subs pertinents cachés derrière les gros subs populaires
-                broad_results = list(self.reddit.subreddits.search(keyword, limit=limit * 10))
+                # Recherche brute via Reddit
+                subs_found_for_keyword = list(
+                    self.reddit.subreddits.search(
+                        query=keyword,
+                        limit=limit * 3
+                    )
+                )
 
-                # --- ETAPE 1 : Filtrage Strict (Le nom contient le mot-clé) ---
-                strict_matches = []
-                for sub in broad_results:
-                    if keyword_lower in sub.display_name.lower():
-                        strict_matches.append(sub)
+                logger.info(
+                    f" -> {len(subs_found_for_keyword)} subreddits trouvés avant limitation pour '{keyword}'"
+                )
 
-                # On trie les stricts par nombre d'abonnés
-                strict_matches.sort(key=lambda x: getattr(x, 'subscribers', 0) or 0, reverse=True)
-
-                for sub in strict_matches:
-                    if len(subs_found_for_keyword) >= limit: break
-                    if sub.display_name not in seen_names:
-                        subs_found_for_keyword.append(sub)
-                        seen_names.add(sub.display_name)
-
-                logger.info(f" -> {len(subs_found_for_keyword)} résultats stricts (Nom) trouvés.")
-
-                # --- ETAPE 2 : Complément Sélectif ---
-                if len(subs_found_for_keyword) < limit:
-                    remaining_needed = limit - len(subs_found_for_keyword)
-
-                    # On trie le reste par pertinence (abonnés)
-                    broad_results.sort(key=lambda x: getattr(x, 'subscribers', 0) or 0, reverse=True)
-
-                    for sub in broad_results:
-                        if remaining_needed <= 0: break
-
-                        if sub.display_name in seen_names:
-                            continue
-
-                        # VÉRIFICATION SUPPLÉMENTAIRE :
-                        # Le mot clé DOIT être dans le titre public ou la description
-                        # Sinon on rejette (ça évite r/france pour "espace")
-                        title_match = keyword_lower in (sub.title or "").lower()
-                        desc_match = keyword_lower in (sub.public_description or "").lower()
-
-                        if title_match or desc_match:
-                            subs_found_for_keyword.append(sub)
-                            seen_names.add(sub.display_name)
-                            remaining_needed -= 1
-
-                logger.info(f" -> Total retenu pour '{keyword}': {len(subs_found_for_keyword)}")
+                # On limite au nombre demandé
+                subs_found_for_keyword = subs_found_for_keyword[:limit]
+                logger.info(
+                    f" -> Total retenu pour '{keyword}': {len(subs_found_for_keyword)} "
+                    f"({[s.display_name for s in subs_found_for_keyword]})"
+                )
 
                 # Extraction des données
                 for sub in subs_found_for_keyword:
@@ -183,7 +165,7 @@ class RedditCollector:
                         logger.warning(f"Erreur lecture sub {sub}: {e}")
 
             except Exception as e:
-                logger.error(f"Erreur recherche mot-clé {keyword}: {e}")
+                logger.error(f"Erreur globale sur mot-clé {keyword}: {e}")
 
         df = pd.DataFrame(all_subs_data)
 
