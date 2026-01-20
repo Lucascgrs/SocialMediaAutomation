@@ -56,7 +56,7 @@ class YouTubeManager:
             'socket_timeout': 30,
             'retries': 10,
             # Suppression du chemin hardcodé ffmpeg
-            'cookiesfrombrowser': ('chrome',),
+            #'cookiesfrombrowser': ('firefox',),
         }
 
     # =========================================================================
@@ -503,14 +503,14 @@ if __name__ == "__main__":
     urls = []
     for channel in res:
         urls.append(res[channel][0])
-    bot.download_multiple_videos(urls)
+    #bot.download_multiple_videos(urls)
     # Recherche
-    #urls = bot.search_videos("Tutoriel Python", max_results=2)
+    #urls = bot.search_videos("ASMR", max_results=20)
     #print("Vidéos trouvées :", urls)
 
     # Téléchargement
-    #if urls:
-    #     bot.download_video("https://www.youtube.com/watch?v=242A9AIZ3TY")
+    if urls:
+         bot.download_multiple_videos(urls)
 
     # Split (découpe la vidéo téléchargée ou via URL)
     # bot.split_video(urls[0], duration=30, use_chapters=False)

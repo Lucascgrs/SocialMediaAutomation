@@ -179,7 +179,7 @@ def download_content(
 if __name__ == "__main__":
 
     # --- CONFIGURATION ---
-    MES_SUJETS = ["Espace", "Astronomie"]
+    MES_SUJETS = ["Astronomie"]
     TYPES_SOUHAITES = ["video"]  # ou ["photo"] ou ["video", "photo"]
 
     # Filtres spécifiques Reddit (Syntaxe pandas query)
@@ -194,7 +194,7 @@ if __name__ == "__main__":
         topics=MES_SUJETS,
         content_types=TYPES_SOUHAITES,
         reddit_filters=FILTRES_REDDIT,
-        youtube_max_results=3,
+        youtube_max_results=1,
         subreddit_max=0,
         max_results_by_sub=0,
         youtube_min_duration=60,  # Minimum 60 secondes

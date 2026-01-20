@@ -437,7 +437,7 @@ class VideoEditor:
         except Exception:
             pass
 
-
+"""
 if __name__ == "__main__":
     # Exemple
     editor = VideoEditor()
@@ -449,4 +449,4 @@ if __name__ == "__main__":
     if wav_path:
         res = editor.transcribe(wav_path, max_words=4)
         if res:
-            editor.create_subtitled_video(style_name="tiktok")
+            editor.create_subtitled_video(style_name="tiktok")"""
