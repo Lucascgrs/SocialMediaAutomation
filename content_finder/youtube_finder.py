@@ -505,7 +505,7 @@ if __name__ == "__main__":
         urls.append(res[channel][0])
     #bot.download_multiple_videos(urls)
     # Recherche
-    #urls = bot.search_videos("ASMR", max_results=20)
+    #urls = bot.search_videos("", max_results=20)
     #print("Vidéos trouvées :", urls)
 
     # Téléchargement
