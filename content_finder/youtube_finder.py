@@ -55,8 +55,10 @@ class YouTubeManager:
             'geo_bypass': True,
             'socket_timeout': 30,
             'retries': 10,
-            # Suppression du chemin hardcodé ffmpeg
-            #'cookiesfrombrowser': ('firefox',),
+
+            # <--- CORRECTION 1 : Activation des cookies du navigateur
+            # Remplacez 'chrome' par 'firefox', 'edge', 'brave' ou 'opera' selon votre cas.
+            'cookiesfrombrowser': ('firefox',),
         }
 
     # =========================================================================
@@ -156,25 +158,21 @@ class YouTubeManager:
             t.join()
 
     # =========================================================================
-    # RECHERCHE & DATA (Sans dépendance Excel en lecture)
+    # RECHERCHE & DATA
     # =========================================================================
 
-    # =========================================================================
-    # RECHERCHE & DATA (Version Filtrée)
-    # =========================================================================
-
-    def search_videos(self, query: str, max_results: int = 5, min_duration: int = 0, max_duration: int = None, save_excel: bool = True) -> List[str]:
+    def search_videos(self, query: str, max_results: int = 5, min_duration: int = 0, max_duration: int = None,
+                      save_excel: bool = True) -> List[str]:
         """
         Recherche des vidéos avec filtrage par durée et boucle de récupération.
         Continue de chercher tant que le nombre de vidéos valides n'est pas atteint.
         """
         found_urls = []
-        seen_ids = set()  # Pour éviter les doublons si on relance la recherche
+        seen_ids = set()
         video_data_list = []
 
-        # On commence par chercher 10x le nombre demandé, puis on augmentera si besoin
         current_search_depth = max(20, max_results * 10)
-        max_search_depth_limit = 300  # Sécurité : on ne scannera pas plus de 300 vidéos pour éviter une boucle infinie
+        max_search_depth_limit = 300
 
         logger.info(f"Recherche YouTube '{query}' (Cible: {max_results}, Durée: {min_duration}-{max_duration}s)")
 
@@ -182,14 +180,15 @@ class YouTubeManager:
 
             search_query = f"ytsearch{current_search_depth}:{query}"
 
-            opts = {
+            # <--- CORRECTION 2 : Utilisation des options globales (avec cookies)
+            opts = self.yt_dlp_opts.copy()
+            opts.update({
                 'quiet': True,
                 'extract_flat': True,
                 'skip_download': True,
                 'ignoreerrors': True
-            }
+            })
 
-            # Indicateur pour savoir si on a trouvé de nouvelles vidéos dans cette passe
             new_videos_found_in_pass = False
 
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -198,7 +197,6 @@ class YouTubeManager:
 
                     if 'entries' in result:
                         for entry in result['entries']:
-                            # Si quota atteint, on arrête tout immédiatement
                             if len(found_urls) >= max_results:
                                 break
 
@@ -206,27 +204,17 @@ class YouTubeManager:
 
                             vid_id = entry.get('id')
                             if vid_id in seen_ids:
-                                continue  # Déjà traité
+                                continue
 
                             seen_ids.add(vid_id)
 
-                            # --- FILTRAGE ---
                             duration = entry.get('duration')
                             url = entry.get('url')
 
-                            # 1. On ignore les vidéos sans durée (souvent des Lives en cours)
-                            if not duration:
-                                continue
+                            if not duration: continue
+                            if min_duration and duration < min_duration: continue
+                            if max_duration and duration > max_duration: continue
 
-                                # 2. Filtre Min
-                            if min_duration and duration < min_duration:
-                                continue
-
-                            # 3. Filtre Max
-                            if max_duration and duration > max_duration:
-                                continue
-
-                            # Vidéo valide !
                             found_urls.append(url)
                             new_videos_found_in_pass = True
 
@@ -240,20 +228,16 @@ class YouTubeManager:
 
                 except Exception as e:
                     logger.error(f"Erreur recherche : {e}")
-                    break  # En cas d'erreur critique API, on sort du while
+                    break
 
-            # Vérification de sortie de boucle
             if len(found_urls) >= max_results:
                 break
 
-            # Si on n'a rien trouvé de nouveau malgré l'augmentation de la profondeur,
-            # c'est que YouTube n'a plus rien de pertinent à proposer.
             if not new_videos_found_in_pass:
                 logger.warning(
                     f"Plus de nouveaux résultats pertinents pour '{query}' après {current_search_depth} éléments.")
                 break
 
-            # Si on n'a pas assez de vidéos, on augmente la profondeur de recherche pour le prochain tour
             logger.info(f" -> Pas assez de vidéos ({len(found_urls)}/{max_results}). Élargissement de la recherche...")
             current_search_depth += 50
 
@@ -266,7 +250,10 @@ class YouTubeManager:
 
     def get_video_metadata(self, url: str) -> Dict[str, Any]:
         """Récupère les métadonnées complètes d'une vidéo (Chapitres, Description...)."""
-        opts = {'quiet': True, 'skip_download': True, 'ignoreerrors': True}
+        # <--- CORRECTION 3 : Utilisation des options globales (avec cookies)
+        opts = self.yt_dlp_opts.copy()
+        opts.update({'quiet': True, 'skip_download': True, 'ignoreerrors': True})
+
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False) or {}
 
@@ -283,7 +270,6 @@ class YouTubeManager:
             if not self.authenticate_google_api():
                 return {}
 
-        # 1. Récupérer les chaînes
         channels = []
         try:
             request = self.youtube_client.subscriptions().list(
@@ -299,7 +285,6 @@ class YouTubeManager:
             logger.error(f"Erreur récupération abonnements : {e}")
             return {}
 
-        # 2. Récupérer les vidéos pour chaque chaîne
         results = {}
         for channel in channels:
             try:
@@ -322,20 +307,11 @@ class YouTubeManager:
     def split_video(self, input_source: str, duration: int = 60, use_chapters: bool = False) -> List[str]:
         """
         Découpe une vidéo (fichier local ou URL).
-
-        Args:
-            input_source: Chemin fichier local OU URL Youtube.
-            duration: Durée des segments (si pas de chapitres).
-            use_chapters: Si True, tente de récupérer les chapitres via yt-dlp.
-
-        Returns:
-            Liste des fichiers créés.
         """
         output_files = []
         video_path = str(input_source)
         metadata = {}
 
-        # 1. Si URL, télécharger d'abord, mais récupérer les métadonnées AVANT pour les chapitres
         if "http" in input_source:
             logger.info("URL détectée, récupération métadonnées...")
             metadata = self.get_video_metadata(input_source)
@@ -343,10 +319,8 @@ class YouTubeManager:
             video_path = self.download_video(input_source, subfolder="temp_split")
             if not video_path: return []
 
-        # 2. Détection des chapitres (sans Excel)
         chapters = []
         if use_chapters:
-            # Option A: Chapitres natifs YouTube
             if metadata.get('chapters'):
                 for chap in metadata['chapters']:
                     chapters.append({
@@ -354,36 +328,27 @@ class YouTubeManager:
                         'end': chap.get('end_time'),
                         'title': chap.get('title')
                     })
-            # Option B: Parsing Description (Timecodes)
             elif metadata.get('description'):
-                # Regex simple pour HH:MM:SS ou MM:SS
                 matches = re.findall(r'(\d{1,2}:?\d{2}:\d{2}|\d{1,2}:\d{2})\s+(.*)', metadata['description'])
                 for time_str, title in matches:
-                    # Conversion simple en secondes (à implémenter si besoin de robustesse)
                     parts = list(map(int, time_str.split(':')))
                     seconds = parts[0] * 60 + parts[1] if len(parts) == 2 else parts[0] * 3600 + parts[1] * 60 + parts[
                         2]
                     chapters.append({'start': float(seconds), 'title': title.strip()})
-
-            # Trier les chapitres
             chapters.sort(key=lambda x: x['start'])
 
-        # 3. Traitement Vidéo
         try:
             clip = VideoFileClip(video_path)
             duration_sec = clip.duration
 
-            # Dossier de sortie spécifique
             base_name = Path(video_path).stem
             split_dir = self.output_dir / "splits" / base_name
             split_dir.mkdir(parents=True, exist_ok=True)
 
-            # Cas A : Découpage par Chapitres
             if use_chapters and chapters:
                 logger.info(f"Découpage selon {len(chapters)} chapitres trouvés.")
                 for i, chap in enumerate(chapters):
                     start = chap['start']
-                    # Fin du chapitre = début du suivant ou fin vidéo
                     end = chapters[i + 1]['start'] if i < len(chapters) - 1 else duration_sec
 
                     if end > duration_sec: end = duration_sec
@@ -395,7 +360,6 @@ class YouTubeManager:
                     self._save_subclip(clip, start, end, str(out_name))
                     output_files.append(str(out_name))
 
-            # Cas B : Découpage par Durée fixe
             else:
                 logger.info(f"Découpage par segments de {duration}s.")
                 for i, start in enumerate(range(0, int(duration_sec), duration)):
@@ -433,54 +397,47 @@ class YouTubeManager:
     def get_automatic_captions(self, url: str, lang: str = 'fr') -> Dict:
         """
         Récupère et parse les sous-titres automatiques.
-        Retourne un dictionnaire structuré.
         """
         video_id = self.extract_video_id(url)
         cache_path = self.output_dir / "captions" / f"{video_id}_{lang}.vtt"
         cache_path.parent.mkdir(exist_ok=True)
 
-        # 1. Téléchargement
-        opts = {
+        # <--- CORRECTION 4 : Utilisation des options globales (avec cookies)
+        opts = self.yt_dlp_opts.copy()
+        opts.update({
             'skip_download': True,
             'writeautomaticsub': True,
             'subtitleslangs': [lang],
             'outtmpl': str(self.output_dir / "captions" / f"{video_id}"),
             'quiet': True
-        }
+        })
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
 
-        # yt-dlp ajoute l'extension de langue (ex: .fr.vtt)
-        # On cherche le fichier généré
         generated_file = next(cache_path.parent.glob(f"{video_id}*.vtt"), None)
 
         if not generated_file:
             logger.warning("Pas de sous-titres trouvés.")
             return {}
 
-        # 2. Parsing simple VTT
         captions = []
         with open(generated_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
-        # Parsing très basique (à améliorer si besoin de précision XML)
-        buffer_text = []
         start_time = None
-
         for line in lines:
             line = line.strip()
             if '-->' in line:
                 start_time = line.split('-->')[0].strip()
             elif line and not line.startswith(('WEBVTT', 'Kind:', 'Language:')):
-                # Nettoyage balises <c>
                 text = re.sub(r'<[^>]+>', '', line)
                 captions.append({'time': start_time, 'text': text})
 
         return {'video_id': video_id, 'lang': lang, 'captions': captions}
 
     # =========================================================================
-    # EXCEL HELPERS (Informatif uniquement)
+    # EXCEL HELPERS
     # =========================================================================
 
     def _save_to_excel(self, df: pd.DataFrame, filename: str):
@@ -499,18 +456,20 @@ class YouTubeManager:
 if __name__ == "__main__":
     # Exemple d'utilisation
     bot = YouTubeManager()
+
+    # --- Test des Abonnements (nécessite l'API Google) ---
     res = bot.get_subscriptions_videos(n_videos=1, limit_channels=70)
     urls = []
     for channel in res:
         urls.append(res[channel][0])
-    #bot.download_multiple_videos(urls)
-    # Recherche
-    #urls = bot.search_videos("", max_results=20)
-    #print("Vidéos trouvées :", urls)
 
-    # Téléchargement
+    # --- Test de Recherche (utilise maintenant les Cookies) ---
+    # urls = bot.search_videos("Tutoriel Python", max_results=3)
+    # print("Vidéos trouvées :", urls)
+
+    # --- Test de Téléchargement ---
     if urls:
          bot.download_multiple_videos(urls)
 
-    # Split (découpe la vidéo téléchargée ou via URL)
-    # bot.split_video(urls[0], duration=30, use_chapters=False)
+    # --- Test de Split ---
+    # bot.split_video("URL_OU_FICHIER", duration=30, use_chapters=False)
