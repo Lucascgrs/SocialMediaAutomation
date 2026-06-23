@@ -454,7 +454,8 @@ class YouTubeManager:
 
 
 if __name__ == "__main__":
-    # Exemple d'utilisation
+    pass
+    """# Exemple d'utilisation
     bot = YouTubeManager()
 
     # --- Test des Abonnements (nécessite l'API Google) ---
@@ -472,4 +473,4 @@ if __name__ == "__main__":
          bot.download_multiple_videos(urls)
 
     # --- Test de Split ---
-    # bot.split_video("URL_OU_FICHIER", duration=30, use_chapters=False)
+    # bot.split_video("URL_OU_FICHIER", duration=30, use_chapters=False)"""

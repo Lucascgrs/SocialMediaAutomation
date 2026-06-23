@@ -11,7 +11,7 @@ from typing import Optional, List, Dict, Any, Tuple
 import pandas as pd
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, AudioFileClip
 from moviepy.config import change_settings
-IMAGEMAGICK_BINARY = r"C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe"
+IMAGEMAGICK_BINARY = r"C:\Program Files\ImageMagick-7.1.2-Q16\magick.exe"
 
 if os.path.exists(IMAGEMAGICK_BINARY):
     change_settings({"IMAGEMAGICK_BINARY": IMAGEMAGICK_BINARY})
@@ -274,9 +274,12 @@ class VideoEditor:
 
     def _save_subclip(self, clip, start, end, path):
         """Helper d'écriture pour éviter la duplication de code."""
+        abs_path = os.path.abspath(path)
+        temp_audio = os.path.join(os.path.dirname(abs_path),
+                                  f"_tmp_{os.path.basename(abs_path)}.m4a")
         clip.subclip(start, end).write_videofile(
-            path, codec='libx264', audio_codec='aac',
-            temp_audiofile='temp-audio.m4a', remove_temp=True,
+            abs_path, codec='libx264', audio_codec='aac',
+            temp_audiofile=temp_audio, remove_temp=True,
             verbose=False, logger=None
         )
 
@@ -341,9 +344,14 @@ class VideoEditor:
                 return None
 
             final = CompositeVideoClip([video_clip] + subtitle_clips)
+            if video_clip.audio is not None:
+                final = final.set_audio(video_clip.audio)
+            abs_out = os.path.abspath(output_path)
+            temp_audio = os.path.join(os.path.dirname(abs_out),
+                                      f"_tmp_{os.path.basename(abs_out)}.m4a")
             final.write_videofile(
-                output_path, codec='libx264', audio_codec='aac',
-                temp_audiofile='temp-subs.m4a', remove_temp=True,
+                abs_out, codec='libx264', audio_codec='aac',
+                temp_audiofile=temp_audio, remove_temp=True,
                 threads=6
             )
 
